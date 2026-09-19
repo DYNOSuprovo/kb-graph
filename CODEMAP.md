@@ -4,7 +4,7 @@
 
 ## Quick Stats
 - **Files:** 242
-- **Total lines:** 47,007
+- **Total lines:** 47,135
 
 ## Architecture Overview
 ```
@@ -65,7 +65,7 @@ bin/
 | daemon-hook-ops.js | 37 | HOOK_OPS | Maps control-socket op names to the same compute cores the CLI hooks fall |
 | daemon-paths.js | 26 | DAEMON_SOCKET_PATH, CONTROL_SOCKET_PATH, HOOK_OP | Socket path constants, split out of daemon.js so they can be imported by |
 | daemon.js | 396 | probeSocketDetailed, probeSocket, startDaemon | The resident KB service: one process, one unix socket, one MCP connection |
-| db.js | 1556 | DEFAULT_BUSY_TIMEOUT_MS, MIGRATIONS, insertDocument, updateDocument, deleteDocument... | better-sqlite3's own default when no `timeout` option is passed — made |
+| db.js | 1568 | DEFAULT_BUSY_TIMEOUT_MS, MIGRATIONS, insertDocument, updateDocument, deleteDocument... | better-sqlite3's own default when no `timeout` option is passed — made |
 | doc-version.js | 24 | snapshotDocumentVersion | Stable per-retrieval content identity. Prefer the vault index hash because it |
 | extract-meter.js | 93 | hashInput, logExtraction, EXTRACTION_SUMMARY_WINDOW_MS, summarizeExtractions, formatExtractionSummary | Write-path telemetry for kb_extract: the read path has retrieval.js as its |
 | extract.js | 884 | EXTRACT_PROMPT, MAX_EXTRACT_CHARS, buildExtractPrompt, chunkForExtract, EXTRACT_CALL_BUDGET_MS... | Auto-capture: turn a raw work conversation / session transcript into durable |
@@ -159,7 +159,7 @@ bin/
 | search-cli.js | 27 | search | - |
 | serve.js | 92 | runServeCli | - |
 | session-capture-hook.js | 45 | sessionCaptureHook | Lifecycle hook entry: enqueue only. No extraction, summarization, indexing, |
-| setup-hooks.js | 344 | HOOK_FILES, PUSH_AGENTS, mergeAgentHooks, installAgentHooks, unresolvableHookCommands... | src/cli/setup-hooks.js — install KB briefing/hint hooks into an agent's hook con |
+| setup-hooks.js | 362 | HOOK_FILES, PUSH_AGENTS, mergeAgentHooks, installAgentHooks, unresolvableHookCommands... | src/cli/setup-hooks.js — install KB briefing/hint hooks into an agent's hook con |
 | setup-jobs.js | 153 | renderPlist, renderSystemdUnits, installJobs | src/cli/setup-jobs.js — install harvest/reindex/synthesis as launchd or systemd  |
 | setup.js | 645 | parseEnvFile, setup | fileURLToPath handles Windows drive letters correctly (avoids C:\C:\ duplication |
 | stale-servers.js | 150 | sourceMtime, staleServers, staleRemedy, runStaleServersCli | Two shapes are running at once: a supervisor (`kb.js mcp`) with the real |
@@ -241,7 +241,7 @@ bin/
 |------|-------|---------|---------|
 | aliases.test.js | 195 | - | Retrieval aliases: the gate that lets a note be found by a subject word its |
 | api-key.test.js | 97 | - | tests/api-key.test.js |
-| bus-removal.test.js | 70 | - | - |
+| bus-removal.test.js | 91 | - | - |
 | child-exit.test.js | 32 | - | - |
 | claude-cli.test.js | 161 | - | Fake claude binaries so these tests need no network and run in ms. |
 | cli-inert.test.js | 234 | - | Every entry point a user or a hook can invoke. `--help` on any of them must |
@@ -271,7 +271,7 @@ bin/
 | grounding.test.js | 654 | - | Points KB_DIR and the vault at throwaway dirs — must come before anything |
 | harvest-eval.test.js | 32 | - | Slow behavioral coverage against the real model: |
 | harvest.test.js | 1060 | - | A claude that answers instantly, so the harvest runs end to end without the |
-| health-backlog.test.js | 194 | - | The briefing carried "202 notes missing summaries" unchanged for weeks. A |
+| health-backlog.test.js | 211 | - | The briefing carried "202 notes missing summaries" unchanged for weeks. A |
 | hint-live-regressions.test.js | 91 | - | - |
 | hint-probe.test.js | 56 | - | - |
 | hint-recall.test.js | 336 | - | The opposing force to hint-relevance.test.js. |
@@ -315,7 +315,7 @@ bin/
 | session-capture.test.js | 432 | - | - |
 | session-map.test.js | 174 | - | Backdates a file's mtime by `days` so the sweeper's age check treats it as |
 | setup-env-preserve.test.js | 10 | - | - |
-| setup-hooks.test.js | 573 | - | tests/setup-hooks.test.js |
+| setup-hooks.test.js | 633 | - | tests/setup-hooks.test.js |
 | setup-jobs.test.js | 110 | - | tests/setup-jobs.test.js |
 | shim-hello.test.js | 125 | - | The compatibility direction step 2 cannot cover: a NEW shim dialing an OLD |
 | shim-path-meter.test.js | 67 | - | - |

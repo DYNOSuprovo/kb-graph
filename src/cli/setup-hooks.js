@@ -153,6 +153,15 @@ const identifies = (spec, command, agent) => {
   return false;
 };
 
+const isCurrentInstall = (spec, command, agent) =>
+  identifies(spec, command, agent) && !spec.legacy?.(command);
+
+const isKbInstall = (command, agent, event) => HOOK_SPECS.some(spec =>
+  spec.agents.includes(agent)
+  && eventFor(spec, agent) === event
+  && (identifies(spec, command, agent) || spec.legacy?.(command))
+);
+
 const clearsNodeOptions = (command) => command.startsWith(HOOK_ENV_PREFIX);
 
 // Pure merge: dedup by the spec's own identity so re-runs and prior manual
@@ -168,24 +177,34 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
     const event = eventFor(spec, agent);
     const entries = (next.hooks[event] = next.hooks[event] ?? []);
     const replacement = commandFor(spec, { nodeBin, kbJsPath, agent });
-    const hasIsolated = entries.some(entry => groupCommands(entry).some(command =>
-      identifies(spec, command, agent) && clearsNodeOptions(command)
-    ));
     const matcher = matcherFor(spec, agent);
-    const directHooks = flat || hasIsolated ? [] : entries.flatMap(group =>
-      (group.hooks ?? []).flatMap(hook =>
-        identifies(spec, hook.command ?? '', agent) && !clearsNodeOptions(hook.command ?? '')
-          ? [{ group, hook }]
-          : []
-      )
+    const currentInstalls = entries.flatMap(group =>
+      (flat ? [group] : (group.hooks ?? []))
+        .filter(hook => isCurrentInstall(spec, hook.command ?? '', agent))
+        .map(hook => ({ group, hook }))
     );
-    const selectedDirect = directHooks.find(candidate => (candidate.group.matcher ?? null) === matcher)
-      ?? directHooks[0];
-    let replacedFlat = false;
+    const canonicalInstalls = currentInstalls.filter(candidate =>
+      (candidate.group.matcher ?? null) === matcher
+    );
+    const isIsolated = candidate => clearsNodeOptions(candidate.hook.command ?? '');
+    const selectedInstall = canonicalInstalls.find(isIsolated)
+      ?? canonicalInstalls[0]
+      ?? currentInstalls.find(isIsolated)
+      ?? currentInstalls[0];
+    const selectedGroupIsKbOnly = Boolean(
+      !flat
+      && selectedInstall
+      && selectedInstall.group.hooks.every(hook => isKbInstall(hook.command ?? '', agent, event))
+    );
     const keepHook = (hook) => {
       const command = hook.command ?? '';
+      // Check legacy first: a hybrid command can also identify as current.
       if (spec.legacy?.(command)) return false;
-      if (!identifies(spec, command, agent) || clearsNodeOptions(command)) return true;
+      if (!identifies(spec, command, agent)) return true;
+      if (selectedGroupIsKbOnly && hook === selectedInstall.hook) {
+        hook.command = replacement;
+        return true;
+      }
       return false;
     };
     for (let i = entries.length - 1; i >= 0; i--) {
@@ -193,12 +212,9 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
       if (flat) {
         const command = group.command ?? '';
         if (spec.legacy?.(command)) entries.splice(i, 1);
-        else if (identifies(spec, command, agent) && !clearsNodeOptions(command)) {
-          if (hasIsolated || replacedFlat) entries.splice(i, 1);
-          else {
-            group.command = replacement;
-            replacedFlat = true;
-          }
+        else if (identifies(spec, command, agent)) {
+          if (group === selectedInstall?.hook) group.command = replacement;
+          else entries.splice(i, 1);
         }
         continue;
       }
@@ -206,14 +222,16 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
       group.hooks = group.hooks.filter(keepHook);
       if (group.hooks.length === 0) entries.splice(i, 1);
     }
-    const already = entries.some(e => groupCommands(e).some(c => identifies(spec, c, agent)));
-    if (already) continue;
-    const selectedGroup = selectedDirect?.group ?? {};
-    const { hooks: _hooks, matcher: _matcher, ...groupMetadata } = selectedGroup;
-    const hook = selectedDirect
-      ? { ...selectedDirect.hook, command: replacement }
+    if (flat && selectedInstall) continue;
+    if (selectedGroupIsKbOnly) {
+      if (matcher) selectedInstall.group.matcher = matcher;
+      else delete selectedInstall.group.matcher;
+      continue;
+    }
+    const hook = selectedInstall
+      ? { ...selectedInstall.hook, command: replacement }
       : { type: 'command', command: replacement };
-    const entry = flat ? { command: replacement } : { ...groupMetadata, hooks: [hook] };
+    const entry = flat ? { command: replacement } : { hooks: [hook] };
     if (matcher) entry.matcher = matcher;
     entries.push(entry);
   }

@@ -8,6 +8,7 @@ import { MIGRATION_TARGETS } from '../src/migration-targets.js';
 import { getHttpToolDefinitions, getToolDefinitions } from '../src/tools.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const UPGRADE_GUIDE = join(ROOT, 'docs', 'UPGRADING-2.0.md');
 const packageJson = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const removedBusSurface = /\bbus[_-][a-z]/i;
 
@@ -42,11 +43,31 @@ describe('message bus removal', () => {
       join(ROOT, 'kb-server.service.example'),
       ...textFiles(join(ROOT, 'docs')),
       ...textFiles(join(ROOT, 'skills')),
-    ].filter(existsSync);
+    ].filter(path => existsSync(path) && path !== UPGRADE_GUIDE);
     const stale = guidanceFiles.filter(path =>
       removedBusSurface.test(readFileSync(path, 'utf8').replaceAll('bus-removal', ''))
     );
     assert.deepEqual(stale, []);
+  });
+
+  it('documents how existing users retire the removed bus surfaces', () => {
+    const guide = readFileSync(UPGRADE_GUIDE, 'utf8');
+    const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
+    assert.match(guide, /bus_send/);
+    assert.match(guide, /bus-notifier/);
+    assert.match(guide, /archive/i);
+    assert.match(guide, /KB_BUS_HOME/);
+    assert.match(guide, /KB_BUS_DB_PATH/);
+    assert.match(guide, /node bin\/kb\.js setup/);
+    assert.doesNotMatch(guide, /^kb setup$/m);
+    assert.doesNotMatch(guide, /\b(?:run|start|use|invoke|call|execute|enable|launch)\s+`?bus[_-][a-z]/i);
+    const stopWritersAt = guide.indexOf('Stop long-lived');
+    const archiveAt = guide.indexOf('tar -czf');
+    assert.notEqual(stopWritersAt, -1);
+    assert.notEqual(archiveAt, -1);
+    assert.ok(stopWritersAt < archiveAt,
+      'the guide must stop SQLite writers before archiving the bus store');
+    assert.match(readme, /\[Upgrading to 2\.0\]\(docs\/UPGRADING-2\.0\.md\)/);
   });
 
   it('keeps public tool counts in sync after removing bus tools', () => {

@@ -1465,11 +1465,23 @@ export function getMeta(key) {
 function backlogWarning({ key, count, floor, minimumGrowth = 1, message, record }) {
   const seen = getMeta(key);
   const previous = seen ? Number(seen.value) : null;
-  if (record) setMeta(key, count);
+  function recordCurrentCount() {
+    if (record) setMeta(key, count);
+  }
   // No baseline yet: adopt this one silently. A fresh install's backlog is its
   // starting condition, not a regression.
-  if (previous === null || !Number.isFinite(previous)) return null;
-  if (count <= floor || count - previous < minimumGrowth) return null;
+  if (previous === null || !Number.isFinite(previous)) {
+    recordCurrentCount();
+    return null;
+  }
+  // Recovery establishes a new low-water mark. Sub-threshold growth does not:
+  // it accumulates until the debounce threshold is crossed.
+  if (count <= floor || count < previous) {
+    recordCurrentCount();
+    return null;
+  }
+  if (count - previous < minimumGrowth) return null;
+  recordCurrentCount();
   return message(count, previous);
 }
 

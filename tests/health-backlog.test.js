@@ -78,8 +78,10 @@ describe('hook failure growth', () => {
     appendFileSync(HOOK_ERROR_LOG, 'third\nfourth\n');
     assert.strictEqual(hookWarning(getHealth({ recordBacklog: true })), undefined,
       'isolated failures below the repeated-failure threshold should not page every session');
+    assert.strictEqual(getMeta('hook_error_lines').value, '2',
+      'sub-threshold failures must remain pending so repeated small leaks accumulate');
 
-    appendFileSync(HOOK_ERROR_LOG, 'fifth\nsixth\nseventh\n');
+    appendFileSync(HOOK_ERROR_LOG, 'fifth\n');
     const baseline = getMeta('hook_error_lines').value;
     const readOnlyWarning = hookWarning(getHealth());
     assert.match(readOnlyWarning, /3 new hook failures/);
@@ -91,6 +93,21 @@ describe('hook failure growth', () => {
     assert.match(warning, /hook-errors\.log/);
     assert.strictEqual(hookWarning(getHealth({ recordBacklog: true })), undefined,
       'the reported count becomes the next briefing baseline');
+  });
+
+  it('re-baselines after a partial log rotation before accumulating new failures', () => {
+    mkdirSync(LOGS_DIR, { recursive: true });
+    getDb().prepare("DELETE FROM meta WHERE key = 'hook_error_lines'").run();
+    writeFileSync(HOOK_ERROR_LOG, 'one\ntwo\nthree\nfour\nfive\n');
+    getHealth({ recordBacklog: true });
+
+    writeFileSync(HOOK_ERROR_LOG, 'rotated-one\nrotated-two\n');
+    assert.strictEqual(hookWarning(getHealth({ recordBacklog: true })), undefined);
+    assert.strictEqual(getMeta('hook_error_lines').value, '2',
+      'a lower non-zero count must become the baseline after log rotation');
+
+    appendFileSync(HOOK_ERROR_LOG, 'new-one\nnew-two\nnew-three\n');
+    assert.match(hookWarning(getHealth({ recordBacklog: true })), /3 new hook failures/);
   });
 });
 

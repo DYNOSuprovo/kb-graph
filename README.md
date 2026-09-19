@@ -29,6 +29,8 @@ vault is plain markdown.
 Open a new Claude Code session: you should see your first **KB BRIEFING**.
 
 Onboarding a teammate? Send them [docs/ONBOARDING.md](docs/ONBOARDING.md).
+Coming from 1.x? Read [Upgrading to 2.0](docs/UPGRADING-2.0.md) before replacing
+your installed hooks or removing the retired message bus.
 
 ---
 

@@ -49,6 +49,22 @@ test('mergeAgentHooks replaces the legacy inline preservation command instead of
   assert.equal(merged.hooks.PreCompact[1].hooks[0].command, 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=precompact');
 });
 
+test('mergeAgentHooks replaces a hybrid legacy PreCompact hook in one run', () => {
+  const hybrid = "/old/node /old/bin/kb.js precompact-hook && printf '%s\\n' 'CRITICAL PRESERVATION INSTRUCTIONS FOR THIS SUMMARY:'; echo 'Git state at compaction:'";
+  const existing = { hooks: { PreCompact: [{ hooks: [{ type: 'command', command: hybrid }] }] } };
+
+  const merged = mergeAgentHooks(existing, OPTS);
+
+  assert.deepEqual(
+    merged.hooks.PreCompact.map(group => group.hooks[0].command),
+    [
+      'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js precompact-hook',
+      'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=precompact',
+    ],
+  );
+  assert.deepEqual(mergeAgentHooks(merged, OPTS), merged);
+});
+
 test('mergeAgentHooks is idempotent', () => {
   const once = mergeAgentHooks({}, OPTS);
   const twice = mergeAgentHooks(once, OPTS);
@@ -145,6 +161,42 @@ test('mergeAgentHooks prefers the direct-node hook with the canonical matcher', 
   }]);
 });
 
+test('mergeAgentHooks preserves group metadata while deduplicating an all-KB group', () => {
+  const existing = {
+    hooks: {
+      SessionStart: [{
+        matcher: 'startup|resume|clear|compact',
+        description: 'KB session briefing',
+        statusMessage: 'Loading memory',
+        hooks: [
+          {
+            type: 'command',
+            command: '/old/node /old/kb.js wakeup-hook',
+          },
+          {
+            type: 'command',
+            command: 'env NODE_OPTIONS= /old/node /old/kb.js wakeup-hook',
+            timeout: 45,
+          },
+        ],
+      }],
+    },
+  };
+
+  const merged = mergeAgentHooks(existing, OPTS);
+
+  assert.deepEqual(merged.hooks.SessionStart, [{
+    matcher: 'startup|resume|clear|compact',
+    description: 'KB session briefing',
+    statusMessage: 'Loading memory',
+    hooks: [{
+      type: 'command',
+      command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook',
+      timeout: 45,
+    }],
+  }]);
+});
+
 // A real settings.json can already carry unrelated PreToolUse entries (e.g. a
 // hand-written style-review reminder) with their own matcher — the dedup key
 // is the spec's own identity (script filename here, subcommand elsewhere),
@@ -166,10 +218,14 @@ test('mergeAgentHooks adds trigger-hook alongside an unrelated PreToolUse entry'
 // prior install from a dev checkout, now re-run from the deploy checkout),
 // which the plain kbJsPath-equality the idempotency test above already
 // covers would not catch.
-test('mergeAgentHooks recognizes an already-installed script hook even from a different checkout directory', () => {
+test('mergeAgentHooks repoints an isolated script hook from a different checkout directory', () => {
   const existing = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'env NODE_OPTIONS= /usr/local/bin/node /Users/dev/kb-checkout/bin/kb-trigger-hook.js' }] }] } };
   const merged = mergeAgentHooks(existing, { nodeBin: '/usr/local/bin/node', kbJsPath: '/opt/kb/bin/kb.js' });
   assert.equal(merged.hooks.PreToolUse.length, 1, 'not duplicated even though the directory prefix differs');
+  assert.equal(
+    merged.hooks.PreToolUse[0].hooks[0].command,
+    'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb-trigger-hook.js',
+  );
 });
 
 test('mergeAgentHooks replaces a direct-node legacy hook with the NODE_OPTIONS-isolated form', () => {
@@ -181,11 +237,13 @@ test('mergeAgentHooks replaces a direct-node legacy hook with the NODE_OPTIONS-i
 });
 
 test('mergeAgentHooks replaces one legacy KB hook without disturbing its unrelated sibling', () => {
-  const unrelated = { type: 'command', command: "echo 'style reminder'" };
+  const unrelated = { type: 'command', command: '/usr/bin/my-linter --mode trigger-hook' };
   const existing = {
     hooks: {
       SessionStart: [{
         matcher: 'startup|resume|clear|compact',
+        description: 'Foreign hook group',
+        statusMessage: 'Running another tool',
         hooks: [
           unrelated,
           { type: 'command', command: '/old/node /old/bin/kb.js wakeup-hook' },
@@ -198,6 +256,8 @@ test('mergeAgentHooks replaces one legacy KB hook without disturbing its unrelat
 
   assert.deepEqual(merged.hooks.SessionStart[0], {
     matcher: 'startup|resume|clear|compact',
+    description: 'Foreign hook group',
+    statusMessage: 'Running another tool',
     hooks: [unrelated],
   });
   assert.deepEqual(merged.hooks.SessionStart[1], {
