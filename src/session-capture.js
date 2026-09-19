@@ -5,7 +5,7 @@
 // wait on the KB database's busy timeout while an agent is trying to stop.
 import { createHash, randomUUID } from 'crypto';
 import {
-  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync,
+  appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync,
   rmSync, statSync, writeFileSync,
 } from 'fs';
 import { basename, dirname, join } from 'path';
@@ -34,6 +34,8 @@ const captureKey = ({ agent, transcriptPath, sessionId }) => createHash('sha256'
 function ensureDirs() {
   mkdirSync(SESSION_CAPTURE_QUEUE_DIR, { recursive: true, mode: 0o700 });
   mkdirSync(SESSION_CAPTURE_RECEIPT_DIR, { recursive: true, mode: 0o700 });
+  chmodSync(SESSION_CAPTURE_QUEUE_DIR, 0o700);
+  chmodSync(SESSION_CAPTURE_RECEIPT_DIR, 0o700);
 }
 
 function readJson(path) {
