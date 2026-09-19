@@ -13,11 +13,6 @@ await lockPreferredNodeRuntime(import.meta.url);
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
-// Bus commands also ship as standalone bins, so they validate their own flags
-// and print their own help. Declaring their flags a second time here is how the
-// two copies drift.
-const DELEGATED = { delegated: true };
-
 const COMMANDS = {
   start: {
     summary: 'Start the dashboard server (default :3838)',
@@ -287,17 +282,6 @@ const COMMANDS = {
       return import('../src/cli/vault-cli.js').then(m => m.vaultReindex());
     },
   },
-  'bus-send': { summary: 'Send a local message bus message', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusSendCli(a)) },
-  'bus-read': { summary: 'Read messages using a stored per-reader cursor', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusReadCli(a)) },
-  'bus-status': { summary: 'Show channel readers, backlog, heartbeats, and latest control', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusStatusCli(a)) },
-  'bus-session': { summary: 'Register/list bus sessions and recorded hook handoffs', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusSessionCli(a)) },
-  'bus-agent': { summary: 'Register/list executable bus workers', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusAgentCli(a)) },
-  'bus-agentd': { summary: 'Launch executable workers for bus tasks', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusAgentdCli(a)) },
-  'bus-hook': { summary: 'Emit hook-friendly digests for unread bus messages', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusHookCli(a)) },
-  'bus-bind': { summary: 'Add/list workspace bus subscriptions for an agent', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusBindCli(a)) },
-  'bus-unbind': { summary: 'Clear one or all workspace bus subscriptions for an agent', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusUnbindCli(a)) },
-  'bus-hook-current': { summary: 'Resolve the current workspace binding and emit hook digests', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusHookCurrentCli(a)) },
-  'bus-notifier': { summary: 'Maintain a background pending-digest notifier for the current workspace binding', ...DELEGATED, run: a => import('../src/bus/cli.js').then(m => m.runBusNotifierCli(a)) },
 };
 
 function usageFor(name) {
@@ -330,6 +314,6 @@ if (!entry) {
 }
 
 await runEntryPoint(async () => {
-  if (!entry.delegated && !acceptFlags(args, { ...entry, usage: usageFor(command) })) return;
+  if (!acceptFlags(args, { ...entry, usage: usageFor(command) })) return;
   await entry.run(args);
 });

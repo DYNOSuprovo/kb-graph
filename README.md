@@ -256,22 +256,6 @@ each one, because an agent picks a tool from that line and nothing else:
 | `kb_vault_status` | Vault indexing stats |
 | `kb_safety_check` | Review a destructive action against KB history |
 
-A local message bus ships alongside, for the one thing a harness cannot do for itself: talk to an agent running in a *different* tool. In-harness agent teams and subagent messaging coordinate agents inside one process tree; when a Claude session and a Codex session are working the same branch, neither can see the other, and this is the channel between them.
-
-| Tool | When to reach for it |
-|------|----------------------|
-| `bus_send` | Hand off, report a step done, ask a blocking question, announce a decision — across tools |
-| `bus_read` | Collect your own mail from a stored cursor; the agent-facing read API |
-| `bus_status` | A peer went quiet — tell "has not read it" from "read it and did not reply" |
-| `bus_sessions` | Who is actually reachable on a channel, and in which workspace |
-| `bus_session_register` | You are not listed on a channel you should be working — mail sends, none arrives |
-| `bus_deliveries` | Which message reached which session; a wiring problem vs. an ignored message |
-| `bus_agent_register` | Work should be picked up when no session is open to receive it |
-| `bus_agents` | Whether a channel already has a worker that would race yours |
-| `bus_agentd_once` | Drain the queue now instead of waiting for the scheduled pass (`dry_run` launches nothing) |
-
-See [docs/message-bus.md](docs/message-bus.md) for wiring.
-
 ## CLI commands
 
 ```
@@ -317,7 +301,7 @@ kb meters prune        Delete old meter rows (--keep-days N required, --dry-run 
 
 `kb tool` is intentionally narrower than MCP. It permits the retrieval,
 capture, correction, promotion, and fact tools needed by `/debrief` and
-`/wrap`; it refuses bus and administrative tools. For example:
+`/wrap`; it refuses administrative tools. For example:
 
 ```bash
 printf '%s\n' '{"query":"resident daemon restart"}' | kb tool kb_search
@@ -333,10 +317,10 @@ arguments or error text in
 `~/.knowledge-base/logs/direct-tool-fallbacks.jsonl`; `kb serve --status`
 reports the 24-hour success denominator and per-tool counts.
 
-That is the set you reach for by hand. `kb --help` lists all 51, including the
-hook entrypoints the installed hooks call, the 11 `bus-*` commands, and the
-maintenance passes (`tier`, `link-backfill`, `fold-inverses`, `stale-servers`,
-`retrieval-report`, `follow-through`, `hint-probe`, `surface-report`, `meters prune`).
+That is the set you reach for by hand. `kb --help` lists every command, including the
+hook entrypoints the installed hooks call and the maintenance passes (`tier`,
+`link-backfill`, `fold-inverses`, `stale-servers`, `retrieval-report`,
+`follow-through`, `hint-probe`, `surface-report`, `meters prune`).
 
 `kb surface-report` answers four questions the store could not answer about
 itself. Which tools does anyone actually call — including the ones nobody has
@@ -434,8 +418,8 @@ still agree.
 
 ## Schema changes
 
-`kb migrate` is the only command that changes the knowledge base or message bus
-schema. Everything else verifies on connect and refuses to run when the database
+`kb migrate` is the only command that changes the knowledge-base schema.
+Everything else verifies on connect and refuses to run when the database
 is behind the code, naming `kb migrate` in the error. A database with no schema
 yet is created on first connect — that has nothing to damage — but an existing
 one is never altered as a side effect of being opened. (`auth.db` is the
@@ -450,7 +434,7 @@ costs you a startup failure that names the fix, not a half-migrated database.
 code: `0` when every database is current, `3` when one is behind, and it prints
 which migrations are missing. For gating a script, prefer it over `kb status` —
 that also exits non-zero when the knowledge base is behind, but with the plain
-`1` it uses for any other failure, and it never looks at the message bus.
+`1` it uses for any other failure.
 
 An MCP session picks up new code without a restart, and that includes new code
 carrying a migration: the supervisor checks before it replaces its child, and if
@@ -458,10 +442,6 @@ the database is behind it keeps the running server answering rather than swappin
 in one that cannot open the database. It says so once, on stderr, and finishes
 the reload by itself once you have run `kb migrate` — no reconnect. Pull, then
 migrate whenever you get to it; the session is not waiting on you.
-
-`kb migrate` covers both databases, and they are located by different variables:
-pointing it somewhere disposable takes `KB_DIR` **and** `KB_BUS_HOME`. `KB_DIR`
-alone still reaches the real message bus.
 
 ---
 
@@ -520,7 +500,6 @@ All agents share one brain: what one learns in a session, the others have in the
 | `KB_HARVEST_SDK_SESSIONS` | No | off | `1`/`true`/`yes` harvests print-mode (SDK) transcripts too. Off because the harvest's own `claude -p` calls look like sessions — 98% of candidates on a busy install. Turn on if you drive Claude Code headlessly and want that work captured |
 | `KB_API_KEY_CLAUDE` / `_OPENAI` / `_GEMINI` | No | — | API keys for remote REST access |
 | `BETTER_AUTH_SECRET` / `BETTER_AUTH_URL` | No | — | OAuth for remote access |
-| `KB_TICKET_REGEX` | No | `(?<=^\|[/_])[a-z]{2,6}-(\d+)` | Workstream autobind: regex that recognizes ticket ids in directory/branch names. Full match (lowercased) becomes the bus channel name. The default deliberately accepts any short prefix so autobind works unconfigured; it will also match same-shaped directory names like `node-22`, so set this to something exact if that bothers you |
 | `KB_REPO_ROOTS` | No | `process.cwd()` | Colon-separated absolute paths searched to verify a `verified`-tier commit sha or file-path reference. The server's cwd is often a workspace directory sitting one level above every git repo, where nothing ever resolves — set this to that workspace and each immediate subdirectory that is a git repo is searched too |
 
 ## Running as a service

@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { MIGRATIONS as KB_MIGRATIONS } from '../src/db.js';
-import { MIGRATIONS as BUS_MIGRATIONS, closeBusDb, getBusDb } from '../src/bus/db.js';
 import {
   applyMigrations,
   ensureSchemaReady,
@@ -30,34 +29,36 @@ function schemaOf(db) {
   ).all();
 }
 
-for (const [label, migrations] of [['knowledge base', KB_MIGRATIONS], ['bus', BUS_MIGRATIONS]]) {
-  describe(`${label} migrations`, () => {
-    it('declares strictly increasing versions', () => {
-      const versions = migrations.map(m => m.version);
-      assert.deepStrictEqual(versions, [...versions].sort((a, b) => a - b));
-      assert.strictEqual(new Set(versions).size, versions.length);
-    });
-
-    it('leaves nothing pending on a database it just built', () => {
-      const db = current(migrations);
-      assert.deepStrictEqual(pendingMigrations(db, migrations), []);
-    });
-
-    it('is idempotent — a second pass runs nothing and changes nothing', () => {
-      const db = current(migrations);
-      const before = schemaOf(db);
-      assert.deepStrictEqual(applyMigrations(db, migrations), []);
-      assert.deepStrictEqual(schemaOf(db), before);
-    });
-
-    it('bootstraps an empty database on connect', () => {
-      const db = new Database(':memory:');
-      assert.ok(isEmptyDatabase(db));
-      ensureSchemaReady(db, { migrations, label, path: ':memory:' });
-      assert.deepStrictEqual(pendingMigrations(db, migrations), []);
-    });
+describe('knowledge base migrations', () => {
+  it('declares strictly increasing versions', () => {
+    const versions = KB_MIGRATIONS.map(m => m.version);
+    assert.deepStrictEqual(versions, [...versions].sort((a, b) => a - b));
+    assert.strictEqual(new Set(versions).size, versions.length);
   });
-}
+
+  it('leaves nothing pending on a database it just built', () => {
+    const db = current(KB_MIGRATIONS);
+    assert.deepStrictEqual(pendingMigrations(db, KB_MIGRATIONS), []);
+  });
+
+  it('is idempotent — a second pass runs nothing and changes nothing', () => {
+    const db = current(KB_MIGRATIONS);
+    const before = schemaOf(db);
+    assert.deepStrictEqual(applyMigrations(db, KB_MIGRATIONS), []);
+    assert.deepStrictEqual(schemaOf(db), before);
+  });
+
+  it('bootstraps an empty database on connect', () => {
+    const db = new Database(':memory:');
+    assert.ok(isEmptyDatabase(db));
+    ensureSchemaReady(db, {
+      migrations: KB_MIGRATIONS,
+      label: 'knowledge base',
+      path: ':memory:',
+    });
+    assert.deepStrictEqual(pendingMigrations(db, KB_MIGRATIONS), []);
+  });
+});
 
 describe('bootstrapping a fresh database', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kb-bootstrap-'));
@@ -70,13 +71,6 @@ describe('bootstrapping a fresh database', () => {
       [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 20, 24, 25, 26],
       'the base tables already carry the vault_files summary columns, so 2 is skipped; '
       + '10 only deletes rows a fresh database does not have',
-    );
-
-    const bus = new Database(':memory:');
-    assert.deepStrictEqual(
-      applyMigrations(bus, BUS_MIGRATIONS).map(m => m.version),
-      [1, 2],
-      'the base tables already carry the v4 reader columns, so no rebuild is needed',
     );
   });
 
@@ -217,46 +211,6 @@ describe('connecting to a database that is behind', () => {
     assert.deepStrictEqual(schemaOf(db), before, 'a refused connection must not have touched the schema');
   });
 
-  it('refuses a bus database whose reader table would be rebuilt', () => {
-    const db = current(BUS_MIGRATIONS);
-    db.exec('ALTER TABLE bus_readers DROP COLUMN capabilities_json');
-    const rows = db.prepare('SELECT COUNT(*) c FROM bus_readers').get().c;
-
-    assert.throws(
-      () => ensureSchemaReady(db, { migrations: BUS_MIGRATIONS, label: 'message bus', path: '/tmp/bus.db' }),
-      SchemaOutOfDateError,
-    );
-    assert.ok(!hasColumn(db, 'bus_readers', 'capabilities_json'));
-    assert.strictEqual(db.prepare('SELECT COUNT(*) c FROM bus_readers').get().c, rows);
-  });
-
-  it('getBusDb refuses a bus file that is behind, leaving its rows alone', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kb-bus-behind-'));
-    const file = join(dir, 'bus.db');
-    const previous = process.env.KB_BUS_DB_PATH;
-    process.env.KB_BUS_DB_PATH = file;
-    try {
-      const seed = new Database(file);
-      applyMigrations(seed, BUS_MIGRATIONS);
-      seed.prepare('INSERT INTO bus_readers (reader, channel, last_seen_id) VALUES (?, ?, ?)')
-        .run('me', 'ws:x', 4);
-      seed.exec('ALTER TABLE bus_readers DROP COLUMN capabilities_json');
-      seed.close();
-
-      assert.throws(() => getBusDb(), SchemaOutOfDateError);
-
-      const check = new Database(file, { readonly: true });
-      assert.ok(!hasColumn(check, 'bus_readers', 'capabilities_json'), 'the refused connection must not have rebuilt the table');
-      assert.strictEqual(check.prepare('SELECT last_seen_id FROM bus_readers').get().last_seen_id, 4);
-      check.close();
-    } finally {
-      closeBusDb();
-      if (previous === undefined) delete process.env.KB_BUS_DB_PATH;
-      else process.env.KB_BUS_DB_PATH = previous;
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it('a non-empty database is never treated as a fresh one', () => {
     const db = new Database(':memory:');
     db.exec('CREATE TABLE unrelated (id INTEGER PRIMARY KEY)');
@@ -340,19 +294,4 @@ describe('migrating forward from an older schema', () => {
     assert.ok(hasIndex(db, 'idx_retrieval_outcomes_doc_version'));
   });
 
-  it('rebuilds bus readers while carrying their cursors forward', () => {
-    const db = current(BUS_MIGRATIONS);
-    db.prepare(
-      'INSERT INTO bus_readers (reader, channel, last_seen_id, notify_cursor) VALUES (?, ?, ?, ?)'
-    ).run('me', 'ws:x', 7, 3);
-    for (const column of ['capabilities_json', 'last_hook_at']) {
-      db.exec(`ALTER TABLE bus_readers DROP COLUMN ${column}`);
-    }
-
-    applyMigrations(db, BUS_MIGRATIONS);
-    const row = db.prepare('SELECT * FROM bus_readers WHERE reader = ?').get('me');
-    assert.strictEqual(row.last_seen_id, 7);
-    assert.strictEqual(row.notify_cursor, 7, 'a lagging notify cursor catches up to last_seen_id');
-    assert.strictEqual(row.capabilities_json, null);
-  });
 });

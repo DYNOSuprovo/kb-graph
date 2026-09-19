@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { EventEmitter } from 'node:events';
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import packageJson from '../package.json' with { type: 'json' };
 import { connectDaemonClient } from '../src/daemon-client.js';
 import { probeSocket, probeSocketDetailed, startDaemon } from '../src/daemon.js';
 
@@ -107,7 +108,7 @@ describe('resident daemon', () => {
     const daemon = await startTestDaemon({ socketPath: freshSocketPath() });
     const client = await connectDaemonClient(daemon.socketPath);
     try {
-      assert.deepStrictEqual(client.getServerVersion(), { name: 'knowledge-base', version: '1.0.0' });
+      assert.deepStrictEqual(client.getServerVersion(), { name: 'knowledge-base', version: packageJson.version });
 
       const { tools } = await client.listTools();
       assert.ok(tools.some(tool => tool.name === 'kb_search'), 'kb_search must be registered');

@@ -169,17 +169,17 @@ test('follows the script a hook names, because that is where the dead paths were
   const script = [
     '#!/bin/bash',
     'NODE="/opt/homebrew/Cellar/node@22/22.21.1_4/bin/node"',
-    'HOOK="/Users/u/Documents/tf/repos/kb/bin/bus-hook-current.js"',
+    'HOOK="/Users/u/Documents/tf/repos/peer/bin/prompt-hook.js"',
     '# see /Users/u/docs/design.md for why',   // a comment is documentation, not a dependency
   ].join('\n');
-  const found = unresolvableHookCommands(hookSettings('/home/u/.claude/bus-stop-hook.sh claude'), {
-    exists: (p) => p.endsWith('bus-stop-hook.sh'),
+  const found = unresolvableHookCommands(hookSettings('/home/u/.claude/peer-hook.sh claude'), {
+    exists: (p) => p.endsWith('peer-hook.sh'),
     read: () => script,
   });
   assert.equal(found.length, 1);
   assert.deepEqual(found[0].missing, [
     '/opt/homebrew/Cellar/node@22/22.21.1_4/bin/node',
-    '/Users/u/Documents/tf/repos/kb/bin/bus-hook-current.js',
+    '/Users/u/Documents/tf/repos/peer/bin/prompt-hook.js',
   ], 'a path in a comment must not be reported as a dependency');
 });
 
@@ -251,7 +251,7 @@ test('mergeAgentHooks does not treat the claude command as the codex one', () =>
   assert.deepEqual(mergeAgentHooks(merged, CODEX_OPTS), merged);
 });
 
-// A real ~/.codex/hooks.json already carries bus hooks (which pass their own
+// A real ~/.codex/hooks.json already carries unrelated hooks (which pass their own
 // `--agent codex`) and oh-my-codex's native hook. None of them is ours, and
 // all of them must come back unchanged.
 const CODEX_HOOKS_FIXTURE = {
@@ -261,16 +261,16 @@ const CODEX_HOOKS_FIXTURE = {
         matcher: 'startup|resume',
         hooks: [
           { type: 'command', command: '/Users/u/.codex/caffeinate-hook.sh ensure' },
-          { type: 'command', command: '/bin/node /repo/bin/bus-autobind.js --agent codex --hook-event SessionStart' },
-          { type: 'command', command: '/bin/node /repo/bin/kb.js bus-hook-current --agent codex --hook-event SessionStart --pending-only' },
+          { type: 'command', command: '/bin/node /repo/bin/peer-hook.js --agent codex --hook-event SessionStart' },
+          { type: 'command', command: '/bin/node /repo/bin/peer-context.js --agent codex --hook-event SessionStart --pending-only' },
         ],
       },
       { matcher: 'startup|resume|clear', hooks: [{ type: 'command', command: '"/bin/node" "/omx/codex-native-hook.js"' }] },
     ],
     UserPromptSubmit: [
-      { hooks: [{ type: 'command', command: '/Users/u/.codex/bus-reset-stop-count.sh codex', statusMessage: 'Resetting bus continuation cap' }] },
+      { hooks: [{ type: 'command', command: '/Users/u/.codex/peer-prompt-hook.sh codex', statusMessage: 'Running peer hook' }] },
     ],
-    Stop: [{ hooks: [{ type: 'command', command: '/Users/u/.codex/bus-stop-hook.sh codex', timeout: 30 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: '/Users/u/.codex/peer-stop-hook.sh codex', timeout: 30 }] }],
   },
 };
 
@@ -282,7 +282,7 @@ test('mergeAgentHooks leaves unrelated codex hook entries exactly as they were',
   assert.equal(merged.hooks.Stop[1].hooks[0].command, '/usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=activity --agent codex');
   assert.equal(merged.hooks.SessionStart.length, 3);
   assert.equal(merged.hooks.UserPromptSubmit.length, 2);
-  // A bus hook carrying `--agent codex` is not a KB briefing hook: dedup keys
+  // An unrelated hook carrying `--agent codex` is not a KB briefing hook: dedup keys
   // on the spec's own subcommand, not on the flag.
   assert.equal(merged.hooks.SessionStart[2].hooks[0].command, '/usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent codex');
 });

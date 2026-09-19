@@ -42,10 +42,7 @@ export function readAgentFlag(args = [], usage = null) {
   return value;
 }
 
-// The JSON shape a hook uses to hand text to Codex as session context. The
-// bus hooks (src/bus/cli.js) print the same envelope through this same
-// function — one spelling of the shape, since a client that gets the key
-// names wrong silently injects nothing.
+// The JSON shape a hook uses to hand text to Codex as session context.
 export function hookJsonEnvelope(hookEventName, additionalContext) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext } }, null, 2);
 }

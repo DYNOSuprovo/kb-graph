@@ -17,7 +17,6 @@ import { inVocabulary, PredicateNotInVocabularyError } from './predicates.js';
 import { getRecentNotes, generateSynthesisPrompt, generateAnalysisRequest, getNearDupPairs } from './synthesis/weekly-review.js';
 import { processNewClippings } from './classify/processor.js';
 import { reviewDestructiveAction } from './safety/review.js';
-import { getBusToolDefinitions } from './bus/tools.js';
 import { tunnel, tagNeighbors, strongestTunnels } from './tunnels.js';
 import { canonicalTag, getTagAliasMap } from './tags.js';
 import { SURFACE, logRetrievalResults } from './retrieval.js';
@@ -118,10 +117,6 @@ const ADMIN_ONLY_TOOLS = new Set([
   'kb_safety_check',
   'kb_capture_youtube',
   'kb_supersede_candidates',
-  'bus_send',
-  'bus_read',
-  'bus_agent_register',
-  'bus_agentd_once',
 ]);
 
 // Every tool, with its call metered. Wrapped here rather than at each call
@@ -134,7 +129,6 @@ export function getToolDefinitions() {
 
 function defineTools() {
   return [
-    ...getBusToolDefinitions(),
     {
       name: 'kb_search',
       description: 'Search the knowledge base using full-text search. Returns ranked results with highlighted snippets. Superseded (retired) notes are excluded unless include_superseded is set.',
