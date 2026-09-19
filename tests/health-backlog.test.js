@@ -4,15 +4,17 @@
 import './helpers/tmp-kb.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getDb, getHealth, getMeta } from '../src/db.js';
 import { addFact } from '../src/facts.js';
 import { JOBS, staleAfterHours } from '../src/jobs.js';
+import { HOOK_ERROR_LOG, LOGS_DIR } from '../src/paths.js';
 import { runReconciliation } from '../src/reconciliation.js';
 
 const summaryWarning = (health) => health.warnings.find(w => w.includes('summaries'));
+const hookWarning = (health) => health.warnings.find(w => w.includes('hook failure'));
 
 function addUnsummarizedNotes(count) {
   const db = getDb();
@@ -60,6 +62,35 @@ describe('backlog warnings fire on growth, not on existence', () => {
     assert.ok(summaryWarning(getHealth()), 'a read-only call still reports growth');
     assert.strictEqual(getMeta('backlog_summaries').value, before,
       'only a session boundary may re-baseline; otherwise the comparison measures how often health was polled');
+  });
+});
+
+describe('hook failure growth', () => {
+  it('warns only when repeated failures accumulate between briefings', () => {
+    mkdirSync(LOGS_DIR, { recursive: true });
+    rmSync(HOOK_ERROR_LOG, { force: true });
+    getDb().prepare("DELETE FROM meta WHERE key = 'hook_error_lines'").run();
+
+    appendFileSync(HOOK_ERROR_LOG, 'first\nsecond\n');
+    assert.strictEqual(hookWarning(getHealth({ recordBacklog: true })), undefined,
+      'an existing log must be adopted without turning historical failures into a new alarm');
+
+    appendFileSync(HOOK_ERROR_LOG, 'third\nfourth\n');
+    assert.strictEqual(hookWarning(getHealth({ recordBacklog: true })), undefined,
+      'isolated failures below the repeated-failure threshold should not page every session');
+
+    appendFileSync(HOOK_ERROR_LOG, 'fifth\nsixth\nseventh\n');
+    const baseline = getMeta('hook_error_lines').value;
+    const readOnlyWarning = hookWarning(getHealth());
+    assert.match(readOnlyWarning, /3 new hook failures/);
+    assert.strictEqual(getMeta('hook_error_lines').value, baseline,
+      'read-only health checks must not move the briefing baseline');
+
+    const warning = hookWarning(getHealth({ recordBacklog: true }));
+    assert.match(warning, /3 new hook failures/);
+    assert.match(warning, /hook-errors\.log/);
+    assert.strictEqual(hookWarning(getHealth({ recordBacklog: true })), undefined,
+      'the reported count becomes the next briefing baseline');
   });
 });
 

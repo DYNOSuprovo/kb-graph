@@ -13,12 +13,12 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { connect } from 'net';
 import { join } from 'path';
 import { CONTROL_SOCKET_PATH, HOOK_OP } from '../daemon-paths.js';
-import { LOGS_DIR } from '../paths.js';
+import { HOOK_ERROR_LOG, LOGS_DIR } from '../paths.js';
 import { AGENT, AGENT_FLAG, AGENTS } from '../process-ancestry.js';
 import { UsageError, readFlagValue } from './flags.js';
 
 // Re-exported so hook modules keep one import for their flag plumbing.
-export { AGENT_FLAG };
+export { AGENT_FLAG, HOOK_ERROR_LOG };
 
 // Which client this hook was installed for. Claude Code takes a hook's plain
 // stdout as context; Codex and Cursor take JSON envelopes of different
@@ -58,11 +58,6 @@ export function hookOutput(output, { agent, hookEventName }) {
   if (agent === AGENT.CURSOR) return JSON.stringify({ additional_context: output });
   return output;
 }
-
-// Shared across every hook that reuses this module (prompt-hint.js and
-// trigger-hook.js so far) — one name, not one per hook, so a failure here
-// doesn't file itself under a different hook's name and mislead triage.
-export const HOOK_ERROR_LOG = join(LOGS_DIR, 'hook-errors.log');
 
 export function recordHookFailure(stage, err) {
   try {

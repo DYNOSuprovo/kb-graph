@@ -31,7 +31,7 @@ const captureKey = ({ agent, transcriptPath, sessionId }) => createHash('sha256'
   .update(`${agent || 'unknown'}\0${sessionId || transcriptPath}`)
   .digest('hex');
 
-function ensureDirs() {
+export function ensureSessionCaptureDirectories() {
   mkdirSync(SESSION_CAPTURE_QUEUE_DIR, { recursive: true, mode: 0o700 });
   mkdirSync(SESSION_CAPTURE_RECEIPT_DIR, { recursive: true, mode: 0o700 });
   chmodSync(SESSION_CAPTURE_QUEUE_DIR, 0o700);
@@ -104,7 +104,7 @@ export function enqueueSessionCapture(payload, { now = Date.now() } = {}) {
     now,
   });
   if (!request) return { output: null, plan: null, queued: false, reason: 'missing_identity' };
-  ensureDirs();
+  ensureSessionCaptureDirectories();
 
   const queuePath = join(SESSION_CAPTURE_QUEUE_DIR, `${request.key}.json`);
   const receiptPath = join(SESSION_CAPTURE_RECEIPT_DIR, `${request.key}.json`);
@@ -160,7 +160,7 @@ export function resolveCaptureTranscript(request, searchRoots) {
 }
 
 export function sessionCaptureQueueStatus(now = Date.now()) {
-  ensureDirs();
+  ensureSessionCaptureDirectories();
   const requests = queueFiles().map(item => item.request).filter(Boolean);
   const due = requests.filter(request => request.dueAt <= now);
   return {
@@ -172,7 +172,7 @@ export function sessionCaptureQueueStatus(now = Date.now()) {
 }
 
 function dueQueueFiles(now) {
-  ensureDirs();
+  ensureSessionCaptureDirectories();
   recoverExpiredLeases(now);
   return queueFiles()
     .filter(item => item.request && item.request.dueAt <= now)
