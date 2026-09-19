@@ -167,28 +167,53 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
     if (!spec.agents.includes(agent)) continue;
     const event = eventFor(spec, agent);
     const entries = (next.hooks[event] = next.hooks[event] ?? []);
+    const replacement = commandFor(spec, { nodeBin, kbJsPath, agent });
+    const hasIsolated = entries.some(entry => groupCommands(entry).some(command =>
+      identifies(spec, command, agent) && clearsNodeOptions(command)
+    ));
+    const matcher = matcherFor(spec, agent);
+    const directHooks = flat || hasIsolated ? [] : entries.flatMap(group =>
+      (group.hooks ?? []).flatMap(hook =>
+        identifies(spec, hook.command ?? '', agent) && !clearsNodeOptions(hook.command ?? '')
+          ? [{ group, hook }]
+          : []
+      )
+    );
+    const selectedDirect = directHooks.find(candidate => (candidate.group.matcher ?? null) === matcher)
+      ?? directHooks[0];
+    let replacedFlat = false;
+    const keepHook = (hook) => {
+      const command = hook.command ?? '';
+      if (spec.legacy?.(command)) return false;
+      if (!identifies(spec, command, agent) || clearsNodeOptions(command)) return true;
+      return false;
+    };
     for (let i = entries.length - 1; i >= 0; i--) {
       const group = entries[i];
       if (flat) {
         const command = group.command ?? '';
-        if (spec.legacy?.(command) || (identifies(spec, command, agent) && !clearsNodeOptions(command))) {
-          entries.splice(i, 1);
+        if (spec.legacy?.(command)) entries.splice(i, 1);
+        else if (identifies(spec, command, agent) && !clearsNodeOptions(command)) {
+          if (hasIsolated || replacedFlat) entries.splice(i, 1);
+          else {
+            group.command = replacement;
+            replacedFlat = true;
+          }
         }
         continue;
       }
       if (!group.hooks) continue;
-      group.hooks = (group.hooks ?? []).filter((hook) => {
-        const command = hook.command ?? '';
-        if (spec.legacy?.(command)) return false;
-        return !identifies(spec, command, agent) || clearsNodeOptions(command);
-      });
+      group.hooks = group.hooks.filter(keepHook);
       if (group.hooks.length === 0) entries.splice(i, 1);
     }
     const already = entries.some(e => groupCommands(e).some(c => identifies(spec, c, agent)));
     if (already) continue;
-    const command = commandFor(spec, { nodeBin, kbJsPath, agent });
-    const entry = flat ? { command } : { hooks: [{ type: 'command', command }] };
-    const matcher = matcherFor(spec, agent);
+    const selectedGroup = selectedDirect?.group ?? {};
+    const { hooks: _hooks, matcher: _matcher, ...groupMetadata } = selectedGroup;
+    const hook = selectedDirect
+      ? { ...selectedDirect.hook, command: replacement }
+      : { type: 'command', command: replacement };
+    const entry = flat ? { command: replacement } : { ...groupMetadata, hooks: [hook] };
     if (matcher) entry.matcher = matcher;
     entries.push(entry);
   }

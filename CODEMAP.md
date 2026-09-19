@@ -4,7 +4,7 @@
 
 ## Quick Stats
 - **Files:** 242
-- **Total lines:** 46,640
+- **Total lines:** 47,007
 
 ## Architecture Overview
 ```
@@ -64,8 +64,8 @@ bin/
 | daemon-client.js | 82 | connectDaemonClient | Client side of the daemon socket. The SDK's stdio client transport spawns |
 | daemon-hook-ops.js | 37 | HOOK_OPS | Maps control-socket op names to the same compute cores the CLI hooks fall |
 | daemon-paths.js | 26 | DAEMON_SOCKET_PATH, CONTROL_SOCKET_PATH, HOOK_OP | Socket path constants, split out of daemon.js so they can be imported by |
-| daemon.js | 391 | probeSocketDetailed, probeSocket, startDaemon | The resident KB service: one process, one unix socket, one MCP connection |
-| db.js | 1543 | DEFAULT_BUSY_TIMEOUT_MS, MIGRATIONS, insertDocument, updateDocument, deleteDocument... | better-sqlite3's own default when no `timeout` option is passed — made |
+| daemon.js | 396 | probeSocketDetailed, probeSocket, startDaemon | The resident KB service: one process, one unix socket, one MCP connection |
+| db.js | 1556 | DEFAULT_BUSY_TIMEOUT_MS, MIGRATIONS, insertDocument, updateDocument, deleteDocument... | better-sqlite3's own default when no `timeout` option is passed — made |
 | doc-version.js | 24 | snapshotDocumentVersion | Stable per-retrieval content identity. Prefer the vault index hash because it |
 | extract-meter.js | 93 | hashInput, logExtraction, EXTRACTION_SUMMARY_WINDOW_MS, summarizeExtractions, formatExtractionSummary | Write-path telemetry for kb_extract: the read path has retrieval.js as its |
 | extract.js | 884 | EXTRACT_PROMPT, MAX_EXTRACT_CHARS, buildExtractPrompt, chunkForExtract, EXTRACT_CALL_BUDGET_MS... | Auto-capture: turn a raw work conversation / session transcript into durable |
@@ -86,7 +86,7 @@ bin/
 | migration-targets.js | 31 | MIGRATION_TARGETS, migrationsFor | Which databases have migrations, and where the lists that define them live. |
 | model-meter.js | 25 | logModelCall | One row per model subprocess call. Logged from the single site every caller |
 | outcome-ranking.js | 56 | OUTCOME, HELPED_OUTCOME_ADJUSTMENT, CORRECTED_OUTCOME_ADJUSTMENT, FTS_OUTCOME_TIE_BUCKET, HINT_OUTCOME_TIE_BUCKET... | Outcome evidence is deliberately a tie-break, not a rank delta. SQLite FTS |
-| paths.js | 39 | KB_DIR, FILES_DIR, LOGS_DIR, DB_PATH, CONFIG_PATH... | tests/helpers/tmp-kb.js checks this to prove it ran before we did. |
+| paths.js | 40 | KB_DIR, FILES_DIR, LOGS_DIR, HOOK_ERROR_LOG, DB_PATH... | tests/helpers/tmp-kb.js checks this to prove it ran before we did. |
 | predicates.js | 362 | VOCABULARY_FILE, canonicalPredicate, SINGLE_VALUED, PREDICATE_INVERSES, inverseTargetOf... | The predicate registry and the one canonicaliser every write path folds |
 | process-ancestry.js | 149 | AGENT, AGENTS, AGENT_FLAG, harnessAgent, findHarnessAncestor... | Identifies "the agent harness process" (Claude Code or Codex CLI) by |
 | reconciliation.js | 612 | RECONCILIATION_LOG_DIR, RECONCILIATION_LOG, RECONCILE_REVIEWER, DEFAULT_RECONCILE_LIMIT, supersessionEvidenceCandidates... | Only bounded source excerpts and review metadata leave this module. Full |
@@ -96,7 +96,7 @@ bin/
 | retrieval.js | 233 | SURFACE, SURFACES, PUSH_SURFACES, READ_SURFACES, isKbNudge... | Read-path telemetry: the write path has always been logged (documents, |
 | schema.js | 98 | MIGRATE_COMMAND, PENDING_EXIT, SchemaOutOfDateError, hasTable, hasIndex... | Every command opens the default database, from whatever checkout it happens to |
 | server.js | 216 | start | - |
-| session-capture.js | 301 | SESSION_CAPTURE_QUEUE_DIR, SESSION_CAPTURE_RECEIPT_DIR, SESSION_CAPTURE_LOG, captureRequest, enqueueSessionCapture... | Durable, model-free handoff from lifecycle hooks to the resident daemon. |
+| session-capture.js | 309 | SESSION_CAPTURE_QUEUE_DIR, SESSION_CAPTURE_RECEIPT_DIR, SESSION_CAPTURE_LOG, ensureSessionCaptureDirectories, captureRequest... | Durable, model-free handoff from lifecycle hooks to the resident daemon. |
 | session-map.js | 97 | SESSION_MAP_DIR, recordSessionMap, resolveMapEntry | harness_pid -> session_id map: the MCP server process is long-lived and one |
 | shim-hello.js | 63 | HELLO_KEY, HELLO_VERSION, MAX_HELLO_LINE_BYTES, encodeHello, parseHelloLine | The one line `kb mcp-shim` writes before any JSON-RPC: which harness owns |
 | shim-path-meter.js | 116 | SHIM_PATH_LOG, SHIM_PATH_WINDOW_MS, recordShimPath, recordShimRecovery, summarizeShimPaths... | One row per mcp-shim startup decision. The fallback deliberately keeps KB |
@@ -141,10 +141,10 @@ bin/
 | fold-inverses.js | 129 | foldInverses, runFoldInversesCli | One-time (re-runnable) migration for rows stored under a spelling |
 | follow-through.js | 522 | followThroughReport, followedFireEvents, runFollowThroughCli | `kb follow-through` — does anyone act on what gets pushed at them? |
 | hint-probe.js | 71 | hintProbe, runHintProbeCli | Replay every prompt the hint has actually been asked about, against the |
-| hook-io.js | 235 | readAgentFlag, hookJsonEnvelope, hookOutput, HOOK_ERROR_LOG, recordHookFailure... | Shared plumbing for agent hooks (Claude Code, Codex, Cursor): never let a hook |
+| hook-io.js | 230 | readAgentFlag, hookJsonEnvelope, hookOutput, recordHookFailure, deliver... | Shared plumbing for agent hooks (Claude Code, Codex, Cursor): never let a hook |
 | ingest-cli.js | 39 | ingest | - |
 | link-backfill.js | 70 | linkBackfill | One-time (re-runnable) backfill: connect every embedded doc to its |
-| mcp-register.js | 139 | SUPPORTED_AGENTS, KB_MCP_SERVER_NAME, KB_ENTRYPOINT_PATH, mcpServerConfig, KB_MCP_SERVER_CONFIG... | Absent and unreadable are different answers. Treating both as "empty config" |
+| mcp-register.js | 154 | SUPPORTED_AGENTS, KB_MCP_SERVER_NAME, KB_ENTRYPOINT_PATH, mcpServerConfig, KB_MCP_SERVER_CONFIG... | Absent and unreadable are different answers. Treating both as "empty config" |
 | mcp-shim.js | 461 | PROBE_TIMEOUT_MS, RECONNECT_DELAY_MS, RECONNECT_MAX_DELAY_MS, runMcpShimCli | Per-session stdio shim: connects this process's stdio to the resident |
 | meters-cli.js | 54 | runMetersPruneCli | `kb meters prune` — the only place these five tables lose a row. No |
 | migrate.js | 91 | runMigrateCli | The only path in the codebase that executes DDL. Everything else verifies. |
@@ -159,7 +159,7 @@ bin/
 | search-cli.js | 27 | search | - |
 | serve.js | 92 | runServeCli | - |
 | session-capture-hook.js | 45 | sessionCaptureHook | Lifecycle hook entry: enqueue only. No extraction, summarization, indexing, |
-| setup-hooks.js | 296 | HOOK_FILES, PUSH_AGENTS, mergeAgentHooks, installAgentHooks, unresolvableHookCommands... | src/cli/setup-hooks.js — install KB briefing/hint hooks into an agent's hook con |
+| setup-hooks.js | 344 | HOOK_FILES, PUSH_AGENTS, mergeAgentHooks, installAgentHooks, unresolvableHookCommands... | src/cli/setup-hooks.js — install KB briefing/hint hooks into an agent's hook con |
 | setup-jobs.js | 153 | renderPlist, renderSystemdUnits, installJobs | src/cli/setup-jobs.js — install harvest/reindex/synthesis as launchd or systemd  |
 | setup.js | 645 | parseEnvFile, setup | fileURLToPath handles Windows drive letters correctly (avoids C:\C:\ duplication |
 | stale-servers.js | 150 | sourceMtime, staleServers, staleRemedy, runStaleServersCli | Two shapes are running at once: a supervisor (`kb.js mcp`) with the real |
@@ -241,13 +241,13 @@ bin/
 |------|-------|---------|---------|
 | aliases.test.js | 195 | - | Retrieval aliases: the gate that lets a note be found by a subject word its |
 | api-key.test.js | 97 | - | tests/api-key.test.js |
-| bus-removal.test.js | 23 | - | - |
+| bus-removal.test.js | 70 | - | - |
 | child-exit.test.js | 32 | - | - |
 | claude-cli.test.js | 161 | - | Fake claude binaries so these tests need no network and run in ms. |
 | cli-inert.test.js | 234 | - | Every entry point a user or a hook can invoke. `--help` on any of them must |
 | context-truth-packet.test.js | 293 | - | - |
 | daemon-shim-identity.test.js | 350 | - | Drives the daemon's MCP socket with hand-written bytes rather than the SDK |
-| daemon.test.js | 368 | - | A listening server holds the event loop open, so a daemon a test failed to |
+| daemon.test.js | 389 | - | A listening server holds the event loop open, so a daemon a test failed to |
 | db-connect-guard.test.js | 40 | - | Runs in its own process so KB_DIR can point somewhere disposable before |
 | db.test.js | 46 | - | - |
 | dedup-agreement.test.js | 109 | - | - |
@@ -271,7 +271,7 @@ bin/
 | grounding.test.js | 654 | - | Points KB_DIR and the vault at throwaway dirs — must come before anything |
 | harvest-eval.test.js | 32 | - | Slow behavioral coverage against the real model: |
 | harvest.test.js | 1060 | - | A claude that answers instantly, so the harvest runs end to end without the |
-| health-backlog.test.js | 163 | - | The briefing carried "202 notes missing summaries" unchanged for weeks. A |
+| health-backlog.test.js | 194 | - | The briefing carried "202 notes missing summaries" unchanged for weeks. A |
 | hint-live-regressions.test.js | 91 | - | - |
 | hint-probe.test.js | 56 | - | - |
 | hint-recall.test.js | 336 | - | The opposing force to hint-relevance.test.js. |
@@ -285,8 +285,8 @@ bin/
 | inverse-fold.test.js | 203 | - | Point the KB at a throwaway dir BEFORE importing anything that opens the DB. |
 | mcp-annotations.test.js | 57 | - | Codex under approval_policy=never auto-approves only tools advertising |
 | mcp-shim.test.js | 402 | - | Drives `kb mcp-shim` as a real child process against a real in-process |
-| mcp-supervisor.test.js | 402 | MARKER, MARKER, MARKER | Same shape as tests/restart-on-change.test.js: a fixed sleep long enough for |
-| mcp-wire-identity.test.js | 193 | - | Captured by hand-rolled JSON-RPC against public/main (v1 SDK, pre-migration) |
+| mcp-supervisor.test.js | 400 | MARKER, MARKER, MARKER | Same shape as tests/restart-on-change.test.js: a fixed sleep long enough for |
+| mcp-wire-identity.test.js | 194 | - | Captured by hand-rolled JSON-RPC against public/main (v1 SDK, pre-migration) |
 | meter-retention.test.js | 217 | - | pruneMeters(table: 'tool_calls') deletes from the whole table, so a test |
 | migration-check.test.js | 155 | - | - |
 | migration-gate.test.js | 158 | MIGRATIONS | - |
@@ -301,21 +301,21 @@ bin/
 | reconciliation-review-regressions.test.js | 200 | - | - |
 | reconciliation.test.js | 432 | - | - |
 | rediscoveries.test.js | 254 | - | Rediscovery telemetry: duplicate detection catching an agent re-deriving a |
-| register.test.js | 206 | - | Codex CLI (0.148) reads [mcp_servers. ] from config.toml and never loads |
+| register.test.js | 237 | - | Codex CLI (0.148) reads [mcp_servers. ] from config.toml and never loads |
 | resident-census.test.js | 71 | - | - |
 | restart-on-change.test.js | 134 | half, seed, half, half, seed... | Waiting a fixed 200ms for FSEvents delivery plus a `node --check` fork is a |
 | retrieval-outcomes.test.js | 456 | - | - |
 | retrieval-report.test.js | 290 | - | The classifier's whole job is to separate "go and look in the KB" from |
 | retrieval-surfaces.test.js | 233 | - | Every read surface, counted rather than inspected. The meter's failure mode |
 | retrieval.test.js | 397 | - | The ancestry walk itself (ps-backed) is process-ancestry.test.js's job; |
-| runtime-node.test.js | 95 | - | Homebrew's Cellar path names one patch release. Persisting it into a job, |
+| runtime-node.test.js | 96 | - | Homebrew's Cellar path names one patch release. Persisting it into a job, |
 | safety-review.test.js | 109 | - | One fake claude whose behaviour is picked by an env var the child inherits, |
 | schema-migrations.test.js | 298 | - | The meter logged the system's own subprocesses alongside real sessions, and |
 | serve-shutdown.test.js | 89 | - | - |
-| session-capture.test.js | 410 | - | - |
+| session-capture.test.js | 432 | - | - |
 | session-map.test.js | 174 | - | Backdates a file's mtime by `days` so the sweeper's age check treats it as |
 | setup-env-preserve.test.js | 10 | - | - |
-| setup-hooks.test.js | 443 | - | tests/setup-hooks.test.js |
+| setup-hooks.test.js | 573 | - | tests/setup-hooks.test.js |
 | setup-jobs.test.js | 110 | - | tests/setup-jobs.test.js |
 | shim-hello.test.js | 125 | - | The compatibility direction step 2 cannot cover: a NEW shim dialing an OLD |
 | shim-path-meter.test.js | 67 | - | - |

@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import packageJson from '../package.json' with { type: 'json' };
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'mcp.js');
 
@@ -21,7 +22,7 @@ const V2_EXPECTED = {
   capabilities: {
     tools: { listChanged: true },
   },
-  serverInfo: { name: 'knowledge-base', version: '2.0.0' },
+  serverInfo: { name: 'knowledge-base', version: packageJson.version },
 };
 
 // Captured against the migrated (v2) server. v1 emitted draft-07 JSON Schema

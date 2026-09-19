@@ -79,13 +79,70 @@ test('generated hooks survive an inherited NODE_OPTIONS preload that no longer e
 });
 
 test('mergeAgentHooks replaces direct-node hooks even when their paths differ', () => {
-  const existing = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: '/opt/homebrew/bin/node /somewhere/else/kb.js wakeup-hook' }] }] } };
+  const existing = {
+    hooks: {
+      SessionStart: [{
+        matcher: 'startup',
+        description: 'KB session briefing',
+        hooks: [{
+          type: 'command',
+          command: '/opt/homebrew/bin/node /somewhere/else/kb.js wakeup-hook',
+          timeout: 45,
+          statusMessage: 'Loading memory',
+        }],
+      }],
+    },
+  };
   const merged = mergeAgentHooks(existing, OPTS);
   assert.equal(merged.hooks.SessionStart.length, 1);
-  assert.equal(merged.hooks.SessionStart[0].hooks[0].command,
-    'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook');
+  assert.deepEqual(merged.hooks.SessionStart[0], {
+    matcher: 'startup|resume|clear|compact',
+    description: 'KB session briefing',
+    hooks: [{
+      type: 'command',
+      command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook',
+      timeout: 45,
+      statusMessage: 'Loading memory',
+    }],
+  });
   assert.equal(merged.hooks.UserPromptSubmit.length, 1); // still added
   assert.equal(merged.hooks.PreToolUse.length, 1); // still added
+});
+
+test('mergeAgentHooks prefers the direct-node hook with the canonical matcher', () => {
+  const existing = {
+    hooks: {
+      SessionStart: [
+        {
+          matcher: 'compact',
+          hooks: [{
+            type: 'command',
+            command: '/old/node /narrow/kb.js wakeup-hook',
+            statusMessage: 'Narrow briefing',
+          }],
+        },
+        {
+          matcher: 'startup|resume|clear|compact',
+          hooks: [{
+            type: 'command',
+            command: '/old/node /canonical/kb.js wakeup-hook',
+            statusMessage: 'Canonical briefing',
+          }],
+        },
+      ],
+    },
+  };
+
+  const merged = mergeAgentHooks(existing, OPTS);
+
+  assert.deepEqual(merged.hooks.SessionStart, [{
+    matcher: 'startup|resume|clear|compact',
+    hooks: [{
+      type: 'command',
+      command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook',
+      statusMessage: 'Canonical briefing',
+    }],
+  }]);
 });
 
 // A real settings.json can already carry unrelated PreToolUse entries (e.g. a
@@ -143,8 +200,14 @@ test('mergeAgentHooks replaces one legacy KB hook without disturbing its unrelat
     matcher: 'startup|resume|clear|compact',
     hooks: [unrelated],
   });
-  assert.equal(merged.hooks.SessionStart[1].hooks[0].command,
-    'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook');
+  assert.deepEqual(merged.hooks.SessionStart[1], {
+    matcher: 'startup|resume|clear|compact',
+    hooks: [{
+      type: 'command',
+      command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook',
+    }],
+  });
+  assert.equal(merged.hooks.SessionStart.length, 2);
 });
 
 test('mergeAgentHooks preserves unrelated settings and hooks', () => {
@@ -467,12 +530,18 @@ test('mergeAgentHooks replaces a direct-node cursor hook with the isolated form'
   const existing = {
     version: 1,
     hooks: {
-      sessionStart: [{ command: '/usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent cursor' }],
+      sessionStart: [{
+        command: '/usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent cursor',
+        timeout: 45,
+      }],
     },
   };
   const merged = mergeAgentHooks(existing, CURSOR_OPTS);
   assert.deepEqual(merged.hooks.sessionStart, [
-    { command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent cursor' },
+    {
+      command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent cursor',
+      timeout: 45,
+    },
   ]);
 });
 

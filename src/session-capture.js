@@ -31,11 +31,19 @@ const captureKey = ({ agent, transcriptPath, sessionId }) => createHash('sha256'
   .update(`${agent || 'unknown'}\0${sessionId || transcriptPath}`)
   .digest('hex');
 
-export function ensureSessionCaptureDirectories() {
-  mkdirSync(SESSION_CAPTURE_QUEUE_DIR, { recursive: true, mode: 0o700 });
-  mkdirSync(SESSION_CAPTURE_RECEIPT_DIR, { recursive: true, mode: 0o700 });
-  chmodSync(SESSION_CAPTURE_QUEUE_DIR, 0o700);
-  chmodSync(SESSION_CAPTURE_RECEIPT_DIR, 0o700);
+export function ensureSessionCaptureDirectories({
+  chmod = chmodSync,
+  mkdir = mkdirSync,
+  onRepairError = () => {},
+} = {}) {
+  for (const path of [SESSION_CAPTURE_QUEUE_DIR, SESSION_CAPTURE_RECEIPT_DIR]) {
+    try {
+      mkdir(path, { recursive: true, mode: 0o700 });
+      chmod(path, 0o700);
+    } catch (err) {
+      onRepairError(err);
+    }
+  }
 }
 
 function readJson(path) {

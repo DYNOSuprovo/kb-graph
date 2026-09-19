@@ -12,7 +12,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { startDaemon } from '../src/daemon.js';
 import {
   SESSION_CAPTURE_QUEUE_DIR, SESSION_CAPTURE_RECEIPT_DIR, enqueueSessionCapture,
-  processSessionCaptureQueue, resolveCaptureTranscript, sessionCaptureQueueStatus,
+  ensureSessionCaptureDirectories, processSessionCaptureQueue, resolveCaptureTranscript,
+  sessionCaptureQueueStatus,
 } from '../src/session-capture.js';
 
 const scratch = [];
@@ -54,6 +55,27 @@ function runCaptureHook({ socketPath, input }) {
 }
 
 describe('session capture queue', () => {
+  it('reports capture directory setup failures without preventing daemon startup', async () => {
+    for (const operation of ['mkdir', 'chmod']) {
+      const repairError = Object.assign(new Error(`${operation} permission denied`), { code: 'EPERM' });
+      const daemonErrors = [];
+      const socketDir = mkdtempSync(join(tmpdir(), 'kb-capture-daemon-'));
+      scratch.push(socketDir);
+      const daemon = await startDaemon({
+        socketPath: join(socketDir, 'daemon.sock'),
+        controlSocketPath: join(socketDir, 'control.sock'),
+        onError: err => daemonErrors.push(err),
+        capturePollMs: 60_000,
+        ensureCaptureDirectories: ({ onRepairError }) => ensureSessionCaptureDirectories({
+          [operation]: () => { throw repairError; },
+          onRepairError,
+        }),
+      });
+      await daemon.close();
+      assert.deepEqual(daemonErrors, [repairError, repairError]);
+    }
+  });
+
   it('repairs existing owner capture directories that are not writable', () => {
     mkdirSync(SESSION_CAPTURE_QUEUE_DIR, { recursive: true, mode: 0o700 });
     mkdirSync(SESSION_CAPTURE_RECEIPT_DIR, { recursive: true, mode: 0o700 });

@@ -76,7 +76,7 @@ Each row says when to reach for the tool, not just what it does — an agent cho
 ## Integration Patterns
 
 ### Claude Code (local, stdio)
-Register with `node bin/kb.js register`. Uses stdio MCP transport. All 24 tools available.
+Register with `node bin/kb.js register`. Uses stdio MCP transport. All 26 tools available.
 
 ### Claude.ai (remote, HTTP MCP)
 Connect via remote MCP at `https://your-domain.com/mcp`. Authenticates with API key or OAuth. Admin-only tools are filtered out.

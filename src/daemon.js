@@ -218,6 +218,7 @@ export async function startDaemon({
   drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
   capturePollMs = 1000,
   captureProcessor = () => processSessionCaptureQueue(),
+  ensureCaptureDirectories = ensureSessionCaptureDirectories,
 } = {}) {
   // Validated for both before binding either — a daemon must not half-start.
   await claimSocket(socketPath);
@@ -225,7 +226,7 @@ export async function startDaemon({
   // Create these before bindSocket temporarily narrows the process-wide umask.
   // Hook enqueue is a separate process, but the daemon's own first queue poll
   // must never be the creator racing either socket bind.
-  ensureSessionCaptureDirectories();
+  ensureCaptureDirectories({ onRepairError: onError });
 
   let inFlight = 0;
   let closed = false;
