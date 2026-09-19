@@ -113,9 +113,19 @@ const groupCommands = (group) => (group.hooks ?? [group]).map(h => h.command ?? 
 // passes nothing — see readAgentFlag), so its command carries no `--agent`.
 const agentSuffix = (agent) => agent === AGENT.CLAUDE ? '' : ` ${AGENT_FLAG} ${agent}`;
 
-const commandFor = (spec, { nodeBin, kbJsPath, agent }) => ((spec.script
-  ? `${nodeBin} ${join(dirname(kbJsPath), spec.script)}`
-  : `${nodeBin} ${kbJsPath} ${spec.subcommand}`) + (spec.extraArgs?.length ? ` ${spec.extraArgs.join(' ')}` : '')) + agentSuffix(agent);
+// Agent hosts can leak their own NODE_OPTIONS into hook subprocesses. If one
+// of those options names a preload that later disappears, Node exits before
+// any hook code can fail open. KB hooks do not depend on host-level Node
+// instrumentation, so run them with an explicitly clean option set.
+const HOOK_ENV_PREFIX = 'env NODE_OPTIONS= ';
+
+const commandFor = (spec, { nodeBin, kbJsPath, agent }) => {
+  const target = spec.script
+    ? join(dirname(kbJsPath), spec.script)
+    : `${kbJsPath} ${spec.subcommand}`;
+  const extraArgs = spec.extraArgs?.length ? ` ${spec.extraArgs.join(' ')}` : '';
+  return `${HOOK_ENV_PREFIX}${nodeBin} ${target}${extraArgs}${agentSuffix(agent)}`;
+};
 
 // The agent a command was installed for, read the same way readAgentFlag
 // reads it at runtime: the flag when present, claude otherwise.
@@ -143,7 +153,11 @@ const identifies = (spec, command, agent) => {
   return false;
 };
 
-// Pure merge: dedup by the spec's own identity so re-runs and prior manual installs never duplicate.
+const clearsNodeOptions = (command) => command.startsWith(HOOK_ENV_PREFIX);
+
+// Pure merge: dedup by the spec's own identity so re-runs and prior manual
+// installs never duplicate. Direct-Node installs are replaced: they inherit
+// the host's NODE_OPTIONS and can die before the hook's fail-open code loads.
 export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLAUDE }) {
   const next = structuredClone(settings ?? {});
   next.hooks = next.hooks ?? {};
@@ -153,13 +167,22 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
     if (!spec.agents.includes(agent)) continue;
     const event = eventFor(spec, agent);
     const entries = (next.hooks[event] = next.hooks[event] ?? []);
-    if (spec.legacy) {
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const group = entries[i];
-        if (!group.hooks) continue;
-        group.hooks = group.hooks.filter(hook => !spec.legacy(hook.command ?? ''));
-        if (group.hooks.length === 0) entries.splice(i, 1);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const group = entries[i];
+      if (flat) {
+        const command = group.command ?? '';
+        if (spec.legacy?.(command) || (identifies(spec, command, agent) && !clearsNodeOptions(command))) {
+          entries.splice(i, 1);
+        }
+        continue;
       }
+      if (!group.hooks) continue;
+      group.hooks = (group.hooks ?? []).filter((hook) => {
+        const command = hook.command ?? '';
+        if (spec.legacy?.(command)) return false;
+        return !identifies(spec, command, agent) || clearsNodeOptions(command);
+      });
+      if (group.hooks.length === 0) entries.splice(i, 1);
     }
     const already = entries.some(e => groupCommands(e).some(c => identifies(spec, c, agent)));
     if (already) continue;
