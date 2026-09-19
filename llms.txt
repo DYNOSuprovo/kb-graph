@@ -46,20 +46,6 @@ Each row says when to reach for the tool, not just what it does — an agent cho
 | kb_vault_status | Vault indexing stats: note counts by type and project. |
 | kb_safety_check | Before any destroy, delete, drop or force-push — checks the action against past incidents. |
 
-The `bus_*` tools cover the one case a harness cannot: coordinating with an agent in a *different* tool (a Codex session, a Gemini session, another terminal). In-harness agent teams operate inside one process tree; the bus crosses that boundary. See docs/message-bus.md for wiring.
-
-| Tool | When to reach for it |
-|------|---------|
-| bus_send | Hand off, report a step done, ask a blocking question, announce a decision — across tools. |
-| bus_read | Collect your own mail from a stored cursor. The agent-facing read API. |
-| bus_status | A peer went quiet — tell "has not read it" from "read it and did not reply". |
-| bus_sessions | Who is reachable on a channel, and in which workspace. |
-| bus_session_register | You are not listed on a channel you should be working — mail sends, none arrives. |
-| bus_deliveries | Which message reached which session: a wiring problem vs. an ignored message. |
-| bus_agent_register | Work should be picked up when no session is open to receive it. |
-| bus_agents | Whether a channel already has a worker that would race yours. |
-| bus_agentd_once | Drain the queue now instead of waiting for the scheduled pass (dry_run launches nothing). |
-
 ## Extension Points
 
 | File | What to Modify |
@@ -90,7 +76,7 @@ The `bus_*` tools cover the one case a harness cannot: coordinating with an agen
 ## Integration Patterns
 
 ### Claude Code (local, stdio)
-Register with `node bin/kb.js register`. Uses stdio MCP transport. All 35 tools available.
+Register with `node bin/kb.js register`. Uses stdio MCP transport. All 26 tools available.
 
 ### Claude.ai (remote, HTTP MCP)
 Connect via remote MCP at `https://your-domain.com/mcp`. Authenticates with API key or OAuth. Admin-only tools are filtered out.

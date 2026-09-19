@@ -2,14 +2,18 @@ import './helpers/tmp-kb.js';
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
+import {
+  chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
+  writeFileSync, utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startDaemon } from '../src/daemon.js';
 import {
   SESSION_CAPTURE_QUEUE_DIR, SESSION_CAPTURE_RECEIPT_DIR, enqueueSessionCapture,
-  processSessionCaptureQueue, resolveCaptureTranscript, sessionCaptureQueueStatus,
+  ensureSessionCaptureDirectories, processSessionCaptureQueue, resolveCaptureTranscript,
+  sessionCaptureQueueStatus,
 } from '../src/session-capture.js';
 
 const scratch = [];
@@ -51,6 +55,44 @@ function runCaptureHook({ socketPath, input }) {
 }
 
 describe('session capture queue', () => {
+  it('reports capture directory setup failures without preventing daemon startup', async () => {
+    for (const operation of ['mkdir', 'chmod']) {
+      const repairError = Object.assign(new Error(`${operation} permission denied`), { code: 'EPERM' });
+      const daemonErrors = [];
+      const socketDir = mkdtempSync(join(tmpdir(), 'kb-capture-daemon-'));
+      scratch.push(socketDir);
+      const daemon = await startDaemon({
+        socketPath: join(socketDir, 'daemon.sock'),
+        controlSocketPath: join(socketDir, 'control.sock'),
+        onError: err => daemonErrors.push(err),
+        capturePollMs: 60_000,
+        ensureCaptureDirectories: ({ onRepairError }) => ensureSessionCaptureDirectories({
+          [operation]: () => { throw repairError; },
+          onRepairError,
+        }),
+      });
+      await daemon.close();
+      assert.deepEqual(daemonErrors, [repairError, repairError]);
+    }
+  });
+
+  it('repairs existing owner capture directories that are not writable', () => {
+    mkdirSync(SESSION_CAPTURE_QUEUE_DIR, { recursive: true, mode: 0o700 });
+    mkdirSync(SESSION_CAPTURE_RECEIPT_DIR, { recursive: true, mode: 0o700 });
+    chmodSync(SESSION_CAPTURE_QUEUE_DIR, 0o500);
+    chmodSync(SESSION_CAPTURE_RECEIPT_DIR, 0o500);
+
+    const result = enqueueSessionCapture({
+      hookInput: { session_id: 'read-only-queue' },
+      agent: 'claude',
+      reason: 'session_end',
+    }, { now: 1000 });
+
+    assert.equal(result.queued, true);
+    assert.equal(statSync(SESSION_CAPTURE_QUEUE_DIR).mode & 0o777, 0o700);
+    assert.equal(statSync(SESSION_CAPTURE_RECEIPT_DIR).mode & 0o777, 0o700);
+  });
+
   it('upserts one item and records a receipt only after successful harvest', async () => {
     const path = transcript();
     const payload = { hookInput: { session_id: 's-1', transcript_path: path }, agent: 'codex', reason: 'session_end' };

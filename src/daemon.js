@@ -22,7 +22,7 @@ import { HOOK_OPS } from './daemon-hook-ops.js';
 import { createKbServer } from './mcp-factory.js';
 import { callIdentity } from './retrieval.js';
 import { MAX_HELLO_LINE_BYTES, parseHelloLine } from './shim-hello.js';
-import { processSessionCaptureQueue } from './session-capture.js';
+import { ensureSessionCaptureDirectories, processSessionCaptureQueue } from './session-capture.js';
 
 // Re-exported for existing importers (serve.js, mcp-shim.js) — the constants
 // themselves live in daemon-paths.js so trigger-hook.js's cold path can
@@ -218,10 +218,15 @@ export async function startDaemon({
   drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
   capturePollMs = 1000,
   captureProcessor = () => processSessionCaptureQueue(),
+  ensureCaptureDirectories = ensureSessionCaptureDirectories,
 } = {}) {
   // Validated for both before binding either — a daemon must not half-start.
   await claimSocket(socketPath);
   await claimSocket(controlSocketPath);
+  // Create these before bindSocket temporarily narrows the process-wide umask.
+  // Hook enqueue is a separate process, but the daemon's own first queue poll
+  // must never be the creator racing either socket bind.
+  ensureCaptureDirectories({ onRepairError: onError });
 
   let inFlight = 0;
   let closed = false;

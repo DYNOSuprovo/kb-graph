@@ -5,7 +5,7 @@
 // wait on the KB database's busy timeout while an agent is trying to stop.
 import { createHash, randomUUID } from 'crypto';
 import {
-  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync,
+  appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync,
   rmSync, statSync, writeFileSync,
 } from 'fs';
 import { basename, dirname, join } from 'path';
@@ -31,9 +31,19 @@ const captureKey = ({ agent, transcriptPath, sessionId }) => createHash('sha256'
   .update(`${agent || 'unknown'}\0${sessionId || transcriptPath}`)
   .digest('hex');
 
-function ensureDirs() {
-  mkdirSync(SESSION_CAPTURE_QUEUE_DIR, { recursive: true, mode: 0o700 });
-  mkdirSync(SESSION_CAPTURE_RECEIPT_DIR, { recursive: true, mode: 0o700 });
+export function ensureSessionCaptureDirectories({
+  chmod = chmodSync,
+  mkdir = mkdirSync,
+  onRepairError = () => {},
+} = {}) {
+  for (const path of [SESSION_CAPTURE_QUEUE_DIR, SESSION_CAPTURE_RECEIPT_DIR]) {
+    try {
+      mkdir(path, { recursive: true, mode: 0o700 });
+      chmod(path, 0o700);
+    } catch (err) {
+      onRepairError(err);
+    }
+  }
 }
 
 function readJson(path) {
@@ -102,7 +112,7 @@ export function enqueueSessionCapture(payload, { now = Date.now() } = {}) {
     now,
   });
   if (!request) return { output: null, plan: null, queued: false, reason: 'missing_identity' };
-  ensureDirs();
+  ensureSessionCaptureDirectories();
 
   const queuePath = join(SESSION_CAPTURE_QUEUE_DIR, `${request.key}.json`);
   const receiptPath = join(SESSION_CAPTURE_RECEIPT_DIR, `${request.key}.json`);
@@ -158,7 +168,7 @@ export function resolveCaptureTranscript(request, searchRoots) {
 }
 
 export function sessionCaptureQueueStatus(now = Date.now()) {
-  ensureDirs();
+  ensureSessionCaptureDirectories();
   const requests = queueFiles().map(item => item.request).filter(Boolean);
   const due = requests.filter(request => request.dueAt <= now);
   return {
@@ -170,7 +180,7 @@ export function sessionCaptureQueueStatus(now = Date.now()) {
 }
 
 function dueQueueFiles(now) {
-  ensureDirs();
+  ensureSessionCaptureDirectories();
   recoverExpiredLeases(now);
   return queueFiles()
     .filter(item => item.request && item.request.dueAt <= now)

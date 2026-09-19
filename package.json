@@ -1,22 +1,10 @@
 {
   "name": "kb-graph",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Persistent memory for AI agents — capture, classify, synthesize, retrieve (MCP + REST)",
   "type": "module",
   "bin": {
-    "kb": "./bin/kb.js",
-    "bus-autobind": "./bin/bus-autobind.js",
-    "bus-bind": "./bin/bus-bind.js",
-    "bus-hook-current": "./bin/bus-hook-current.js",
-    "bus-send": "./bin/bus-send.js",
-    "bus-unbind": "./bin/bus-unbind.js",
-    "bus-read": "./bin/bus-read.js",
-    "bus-status": "./bin/bus-status.js",
-    "bus-session": "./bin/bus-session.js",
-    "bus-agent": "./bin/bus-agent.js",
-    "bus-agentd": "./bin/bus-agentd.js",
-    "bus-hook": "./bin/bus-hook.js",
-    "bus-notifier": "./bin/bus-notifier.js"
+    "kb": "./bin/kb.js"
   },
   "main": "./src/index.js",
   "scripts": {

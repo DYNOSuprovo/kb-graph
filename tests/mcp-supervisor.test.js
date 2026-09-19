@@ -75,9 +75,7 @@ function install({ behind = false } = {}) {
   seedDb(db, behind ? BEHIND.applied : KB_MIGRATIONS);
   return {
     db,
-    // KB_BUS_HOME points at a directory nothing creates: an absent database is
-    // a fresh install, which the gate treats as current.
-    env: { KB_DIR: join(dir, 'kb'), KB_BUS_HOME: join(dir, 'bus'), KB_BUS_DB_PATH: '' },
+    env: { KB_DIR: join(dir, 'kb') },
   };
 }
 

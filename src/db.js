@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
-import { statSync } from 'fs';
-import { DB_PATH } from './paths.js';
+import { readFileSync, statSync } from 'fs';
+import { DB_PATH, HOOK_ERROR_LOG } from './paths.js';
 import { normalizeTagString, splitTags, canonicalTag, tagSpellings, getTagAliasMap } from './tags.js';
 import { STALE_AFTER } from './jobs.js';
 import {
@@ -1462,15 +1462,35 @@ export function getMeta(key) {
 // `record` is passed by the session-start surfaces alone. Read-only callers
 // must leave the baseline where it is, or the comparison measures how often the
 // snapshot was taken.
-function backlogWarning({ key, count, floor, message, record }) {
+function backlogWarning({ key, count, floor, minimumGrowth = 1, message, record }) {
   const seen = getMeta(key);
   const previous = seen ? Number(seen.value) : null;
-  if (record) setMeta(key, count);
+  function recordCurrentCount() {
+    if (record) setMeta(key, count);
+  }
   // No baseline yet: adopt this one silently. A fresh install's backlog is its
   // starting condition, not a regression.
-  if (previous === null || !Number.isFinite(previous)) return null;
-  if (count <= floor || count <= previous) return null;
+  if (previous === null || !Number.isFinite(previous)) {
+    recordCurrentCount();
+    return null;
+  }
+  // Recovery establishes a new low-water mark. Sub-threshold growth does not:
+  // it accumulates until the debounce threshold is crossed.
+  if (count <= floor || count < previous) {
+    recordCurrentCount();
+    return null;
+  }
+  if (count - previous < minimumGrowth) return null;
+  recordCurrentCount();
   return message(count, previous);
+}
+
+function lineCount(path) {
+  try {
+    return (readFileSync(path, 'utf8').match(/\n/g) || []).length;
+  } catch {
+    return 0;
+  }
 }
 
 // One health snapshot for wakeup/status: derived-layer coverage plus job
@@ -1499,6 +1519,7 @@ export function getHealth({ recordBacklog = false } = {}) {
   const lastHarvest = harvest?.updated_at || harvestLogged;
   const harvestAge = lastHarvest ? (Date.now() - new Date(lastHarvest + 'Z').getTime()) / 3600000 : null;
   const synthesis = getMeta('last_synthesis');
+  const hookErrors = lineCount(HOOK_ERROR_LOG);
   const reconcile = getMeta('last_reconcile');
   const reconcileError = getMeta('last_reconcile_error');
 
@@ -1514,6 +1535,10 @@ export function getHealth({ recordBacklog = false } = {}) {
     backlogWarning({
       key: 'backlog_summaries', count: vaultFiles - summarized, floor: 50, record: recordBacklog,
       message: (now, was) => `notes missing summaries grew ${was} → ${now} — 'kb summarize' rewrites note frontmatter in the vault, ~11s and one model call per note (try --limit=N --dry-run first); the graph picks it up on the next reindex`,
+    }),
+    backlogWarning({
+      key: 'hook_error_lines', count: hookErrors, floor: 0, minimumGrowth: 3, record: recordBacklog,
+      message: (now, was) => `${now - was} new hook failures since the last briefing (${was} → ${now}) — check hook-errors.log`,
     }),
   ].filter(Boolean);
   warnings.push(...growth);
