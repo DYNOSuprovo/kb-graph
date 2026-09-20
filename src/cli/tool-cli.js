@@ -4,6 +4,9 @@ import { UsageError, readFlagValue } from './flags.js';
 import { getToolDefinitions } from '../tools.js';
 import { readToolResult } from '../tool-meter.js';
 import { recordFallbackTool } from '../fallback-tool-meter.js';
+import { MAINTENANCE_TOOL } from '../tool-names.js';
+import { callSource } from '../retrieval.js';
+import { WRITE_DECISION_SOURCE } from '../write-meter.js';
 
 const INPUT_MAX_BYTES = 1024 * 1024;
 const USAGE = 'Usage: kb tool <name> [--input <json-file>]\n\n'
@@ -13,14 +16,14 @@ export const FALLBACK_TOOL_NAMES = Object.freeze([
   'kb_search',
   'kb_read',
   'kb_check_duplicate',
-  'kb_write',
-  'kb_supersede',
-  'kb_promote',
+  MAINTENANCE_TOOL.WRITE,
+  MAINTENANCE_TOOL.SUPERSEDE,
+  MAINTENANCE_TOOL.PROMOTE,
   'kb_fact_add',
   'kb_fact_invalidate',
   'kb_extract',
   'kb_capture_session',
-  'kb_capture_fix',
+  MAINTENANCE_TOOL.CAPTURE_FIX,
 ]);
 
 async function readStdin() {
@@ -79,7 +82,10 @@ export async function runToolCli(args) {
       throw new UsageError(`Invalid input for ${name}: ${err.issues?.map(issue => issue.message).join('; ') || err.message}`, USAGE);
     }
 
-    const result = await tool.handler(validated);
+    const result = await callSource.run(
+      WRITE_DECISION_SOURCE.CLI,
+      () => tool.handler(validated),
+    );
     const { ok } = readToolResult(result);
     outcome = ok ? 'succeeded' : 'tool_error';
     console.log(renderResult(result));

@@ -109,6 +109,15 @@ export const isKbNudge = (prompt) => KB_NUDGE.test(prompt || '');
 // fallback below.
 export const callIdentity = new AsyncLocalStorage();
 
+// Write-channel attribution is independent from the harness identity above:
+// binding a CLI source must not mask the ancestry that supplies session and
+// agent attribution.
+export const callSource = new AsyncLocalStorage();
+
+export function resolveCallSource() {
+  return callSource.getStore() ?? null;
+}
+
 let cachedAncestry = null;
 function defaultAncestry() {
   const bound = callIdentity.getStore();

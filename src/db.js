@@ -394,10 +394,12 @@ export const MIGRATIONS = [{
       result_chars INTEGER,
       error TEXT,
       session TEXT,
+      agent TEXT,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_created ON tool_calls(tool, created_at);
+    CREATE INDEX IF NOT EXISTS idx_tool_calls_session_created ON tool_calls(session, created_at);
 
     CREATE TABLE IF NOT EXISTS write_decisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -413,10 +415,15 @@ export const MIGRATIONS = [{
       -- collecting, and documents.superseded_at already holds it: join through
       -- doc_id rather than keeping a second copy that can disagree.
       doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+      session TEXT,
+      agent TEXT,
+      source TEXT,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE INDEX IF NOT EXISTS idx_write_decisions_doc ON write_decisions(doc_id);
+    CREATE INDEX IF NOT EXISTS idx_write_decisions_session_created
+      ON write_decisions(session, created_at);
   `),
 }, {
   version: 12,
@@ -483,19 +490,12 @@ export const MIGRATIONS = [{
   `),
 }, {
   version: 14,
-  // Five meter tables, none ever pruned, on a shared SQLite file -- tool_calls
-  // grows per call to any of 26 tools and model_calls per model subprocess
-  // call, both faster than the older per-result tables. `kb meters prune`
-  // (see src/meters.js) deletes rows older than an operator-chosen window, but
-  // some reports (surface-report's tool demand and write-decision bands) read
-  // those tables over all time, so a naive delete would silently change the
-  // numbers they print. This table is where the rows about to be deleted get
-  // folded first, in the same transaction as the delete, so those reports read
-  // identical before and after a prune. One row per (table_name, day, dim)
-  // bucket; `dim` means something different per table_name (see foldToolCalls
-  // / foldWriteDecisions in src/meters.js). Two of the five tables
-  // (retrievals, model_calls) have no rollup shape that preserves what reads
-  // them, so prune refuses to touch them -- see PRUNE_EXCLUDED.
+  // Historical schema note: this migration introduced day-bucketed rollups
+  // when tool_calls and write_decisions were considered prunable. Migration 29
+  // later added session/agent/source attribution that these buckets cannot
+  // preserve, so current pruning retains those raw tables. Keep the table and
+  // its existing data: surface-report still merges historical rollups with raw
+  // rows, but src/meters.js no longer writes new rollups.
   name: 'meter rollups for prune coverage preservation',
   applied: db => hasTable(db, 'meter_rollups'),
   up: db => db.exec(`
@@ -840,6 +840,33 @@ export const MIGRATIONS = [{
   name: 'transcript parser generation on harvest watermarks',
   applied: db => !hasTable(db, 'harvest_log') || hasColumn(db, 'harvest_log', 'parser_version'),
   up: db => addColumn(db, 'harvest_log', 'parser_version', 'INTEGER'),
+}, {
+  version: 29,
+  // Attribution begins at this migration. Historical rows stay NULL because
+  // their originating session, agent, and write surface cannot be recovered
+  // without guessing. Session-first indexes keep the follow-through report's
+  // bounded same-session time windows off full table scans.
+  name: 'session and agent attribution on write and tool meters',
+  applied: db => [
+    ['write_decisions', 'session'],
+    ['write_decisions', 'agent'],
+    ['write_decisions', 'source'],
+    ['tool_calls', 'agent'],
+  ].every(([table, column]) => hasColumn(db, table, column))
+    && hasIndex(db, 'idx_write_decisions_session_created')
+    && hasIndex(db, 'idx_tool_calls_session_created'),
+  up: db => {
+    addColumn(db, 'write_decisions', 'session', 'TEXT');
+    addColumn(db, 'write_decisions', 'agent', 'TEXT');
+    addColumn(db, 'write_decisions', 'source', 'TEXT');
+    addColumn(db, 'tool_calls', 'agent', 'TEXT');
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_write_decisions_session_created
+        ON write_decisions(session, created_at);
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_session_created
+        ON tool_calls(session, created_at);
+    `);
+  },
 }];
 
 // SQL's restatement of isTestSession() (src/retrieval.js) -- SQLite has no
