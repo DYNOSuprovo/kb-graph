@@ -7,6 +7,9 @@
 [![Node 22, 24, 26](https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-339933?logo=node.js&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+[![Three-step kb-graph loop: session briefing, targeted prompt hint, and durable capture](docs/assets/loop-demo.svg)](docs/assets/loop-demo.svg)
+*Static demonstration with synthetic data; open it for the full-size view. Claude Code is shown; Codex receives equivalent hook context; Cursor receives the session briefing only.*
+
 kb-graph gives Claude Code, Codex, Cursor, Gemini, and other MCP clients one
 searchable knowledge base. Notes remain files you own. SQLite adds full-text
 search, local embeddings add semantic retrieval, and agent hooks can put current

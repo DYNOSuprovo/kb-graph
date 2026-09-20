@@ -1,0 +1,122 @@
+{
+  "title": "The knowledge loop",
+  "description": "A static synthetic example of a session briefing, a precise prompt hint, and a durable note capture.",
+  "panels": [
+    {
+      "id": "briefing",
+      "step": "01",
+      "title": "Session briefing",
+      "subtitle": "Claude Code · SessionStart",
+      "lines": [
+        {
+          "kind": "accent",
+          "text": "KB BRIEFING (knowledge-base MCP; 3 docs, 1 current facts; types: lesson 2, state 1)"
+        },
+        {
+          "kind": "muted",
+          "text": "health: synthetic example (environment-dependent details omitted)"
+        },
+        {
+          "kind": "heading",
+          "text": "Active workstreams (kb_read for current state):"
+        },
+        {
+          "kind": "output",
+          "text": "- #41 example-app launch state (verified, as of 2026-09-18)"
+        },
+        {
+          "kind": "heading",
+          "text": "Recently updated:"
+        },
+        {
+          "kind": "output",
+          "text": "- Retry boundaries [example-app] (lesson, verified)"
+        },
+        {
+          "kind": "muted",
+          "text": "Before non-trivial work: kb_search(query, tags) or kb_context(query). Entity history: kb_fact_query(entity); only a fresh reviewed projection is current state."
+        },
+        {
+          "kind": "muted",
+          "text": "At a durable boundary, call kb_write directly; it owns duplicate gating and fails closed. Search and read before correcting an existing note, then pass supersedes."
+        }
+      ]
+    },
+    {
+      "id": "hint",
+      "step": "02",
+      "title": "Targeted hint",
+      "subtitle": "Claude Code · UserPromptSubmit",
+      "lines": [
+        {
+          "kind": "command",
+          "text": "› How should example-app handle retry boundaries?"
+        },
+        {
+          "kind": "accent",
+          "text": "KB HINT: the knowledge base has entries relevant to this prompt: #42 \"Retry boundaries\" (lesson, verified). Check them with kb_read(id) before exploring from scratch."
+        },
+        {
+          "kind": "spacer",
+          "text": ""
+        },
+        {
+          "kind": "command",
+          "text": "› Which color should the empty state use?"
+        },
+        {
+          "kind": "declined",
+          "text": "(no hint)"
+        }
+      ]
+    },
+    {
+      "id": "capture",
+      "step": "03",
+      "title": "Durable capture",
+      "subtitle": "kb_write · sanitized",
+      "input": {
+        "title": "Retry boundaries",
+        "content": "Cap retries at three attempts and surface the final error.",
+        "type": "lesson",
+        "project": "example-app",
+        "tier": "verified",
+        "tier_ref": "#88"
+      },
+      "lines": [
+        {
+          "kind": "command",
+          "text": "kb_write({"
+        },
+        {
+          "kind": "output",
+          "text": "  \"title\": \"Retry boundaries\","
+        },
+        {
+          "kind": "output",
+          "text": "  \"content\": \"Cap retries at three attempts and surface the final error.\","
+        },
+        {
+          "kind": "output",
+          "text": "  \"type\": \"lesson\", \"project\": \"example-app\","
+        },
+        {
+          "kind": "output",
+          "text": "  \"tier\": \"verified\", \"tier_ref\": \"#88\""
+        },
+        {
+          "kind": "command",
+          "text": "})"
+        },
+        {
+          "kind": "spacer",
+          "text": ""
+        },
+        {
+          "kind": "success",
+          "text": "Note #43 saved to agents/lessons/2026-09-18-retry-boundaries.md as verified; indexed 1 changed, 0 unchanged"
+        }
+      ]
+    }
+  ]
+}
