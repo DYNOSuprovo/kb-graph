@@ -1,39 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="526" viewBox="0 0 1200 526" role="img" aria-labelledby="loop-title loop-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="508" viewBox="0 0 1200 508" role="img" aria-labelledby="loop-title loop-desc">
   <title id="loop-title">The knowledge loop</title>
   <desc id="loop-desc">A static synthetic example of a session briefing, a precise prompt hint, and a durable note capture.</desc>
-  <rect width="1200" height="526" rx="18" fill="#0b0d12"/>
+  <rect width="1200" height="508" rx="18" fill="#0b0d12"/>
   <g id="panel-briefing">
-    <rect x="24" y="24" width="372" height="478" rx="14" fill="#151821" stroke="#303746" style="stroke-width: 1px;"/>
+    <rect x="24" y="24" width="372" height="460" rx="14" fill="#151821" stroke="#303746" style="stroke-width: 1px;"/>
     <circle cx="46" cy="48" r="5" fill="#ff5f57"/>
     <circle cx="62" cy="48" r="5" fill="#febc2e"/>
     <circle cx="78" cy="48" r="5" fill="#28c840"/>
     <text x="42" y="75" fill="#f8f8f2" style="font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; font-size: 15px; font-weight: 700;">01 · Session briefing</text>
     <text x="42" y="91" fill="#8b93a7" style="font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; font-size: 10px;">Claude Code · SessionStart</text>
     <rect x="25" y="101" width="370" height="1" fill="#303746"/>
-    <text x="42" y="131" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">KB BRIEFING (knowledge-base MCP; 3 docs, 1</text>
+    <text x="42" y="131" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">KB BRIEFING (knowledge-base MCP; 3 docs, 2</text>
     <text x="42" y="149" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">current facts; types: lesson 2, state 1)</text>
     <text x="42" y="167" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">health: synthetic example</text>
     <text x="42" y="185" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">(environment-dependent details omitted)</text>
     <text x="42" y="203" fill="#bd93f9" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 600;" xml:space="preserve">Active workstreams (kb_read for current</text>
     <text x="42" y="221" fill="#bd93f9" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 600;" xml:space="preserve">state):</text>
-    <text x="42" y="239" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">- #41 example-app launch state (verified,</text>
-    <text x="42" y="257" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">as of 2026-09-18)</text>
+    <text x="42" y="239" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">- #41 example-app launch state (as of</text>
+    <text x="42" y="257" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">2026-09-18)</text>
     <text x="42" y="275" fill="#bd93f9" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 600;" xml:space="preserve">Recently updated:</text>
-    <text x="42" y="293" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">- Retry boundaries [example-app] (lesson,</text>
-    <text x="42" y="311" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">verified)</text>
-    <text x="42" y="329" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">Before non-trivial work: kb_search(query,</text>
-    <text x="42" y="347" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">tags) or kb_context(query). Entity history:</text>
-    <text x="42" y="365" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">kb_fact_query(entity); only a fresh</text>
-    <text x="42" y="383" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">reviewed projection is current state.</text>
-    <text x="42" y="401" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">At a durable boundary, call kb_write</text>
-    <text x="42" y="419" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">directly; it owns duplicate gating and</text>
-    <text x="42" y="437" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">fails closed. Search and read before</text>
-    <text x="42" y="455" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">correcting an existing note, then pass</text>
-    <text x="42" y="473" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">supersedes.</text>
+    <text x="42" y="293" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">- Retry boundaries [example-app] (lesson)</text>
+    <text x="42" y="311" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">Before non-trivial work: kb_search(query,</text>
+    <text x="42" y="329" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">tags) or kb_context(query). Entity history:</text>
+    <text x="42" y="347" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">kb_fact_query(entity); only a fresh</text>
+    <text x="42" y="365" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">reviewed projection is current state.</text>
+    <text x="42" y="383" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">At a durable boundary, call kb_write</text>
+    <text x="42" y="401" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">directly; it owns duplicate gating and</text>
+    <text x="42" y="419" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">fails closed. Search and read before</text>
+    <text x="42" y="437" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">correcting an existing note, then pass</text>
+    <text x="42" y="455" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">supersedes. …</text>
   </g>
   <g id="panel-hint">
-    <rect x="414" y="24" width="372" height="478" rx="14" fill="#151821" stroke="#303746" style="stroke-width: 1px;"/>
+    <rect x="414" y="24" width="372" height="460" rx="14" fill="#151821" stroke="#303746" style="stroke-width: 1px;"/>
     <circle cx="436" cy="48" r="5" fill="#ff5f57"/>
     <circle cx="452" cy="48" r="5" fill="#febc2e"/>
     <circle cx="468" cy="48" r="5" fill="#28c840"/>
@@ -44,31 +43,30 @@
     <text x="432" y="149" fill="#f8f8f2" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">boundaries?</text>
     <text x="432" y="167" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">KB HINT: the knowledge base has entries</text>
     <text x="432" y="185" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">relevant to this prompt: #42 &quot;Retry</text>
-    <text x="432" y="203" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">boundaries&quot; (lesson, verified). Check them</text>
-    <text x="432" y="221" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">with kb_read(id) before exploring from</text>
-    <text x="432" y="239" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">scratch.</text>
-    <text x="432" y="275" fill="#f8f8f2" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">› Which color should the empty state use?</text>
-    <text x="432" y="293" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">(no hint)</text>
+    <text x="432" y="203" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">boundaries&quot; (lesson). Check them with</text>
+    <text x="432" y="221" fill="#8be9fd" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">kb_read(id) before exploring from scratch.</text>
+    <text x="432" y="257" fill="#f8f8f2" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">› Which color should the empty state use?</text>
+    <text x="432" y="275" fill="#8b93a7" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">(no hint)</text>
   </g>
   <g id="panel-capture">
-    <rect x="804" y="24" width="372" height="478" rx="14" fill="#151821" stroke="#303746" style="stroke-width: 1px;"/>
+    <rect x="804" y="24" width="372" height="460" rx="14" fill="#151821" stroke="#303746" style="stroke-width: 1px;"/>
     <circle cx="826" cy="48" r="5" fill="#ff5f57"/>
     <circle cx="842" cy="48" r="5" fill="#febc2e"/>
     <circle cx="858" cy="48" r="5" fill="#28c840"/>
     <text x="822" y="75" fill="#f8f8f2" style="font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; font-size: 15px; font-weight: 700;">03 · Durable capture</text>
-    <text x="822" y="91" fill="#8b93a7" style="font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; font-size: 10px;">kb_write · sanitized</text>
+    <text x="822" y="91" fill="#8b93a7" style="font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; font-size: 10px;">kb_write · synthetic input</text>
     <rect x="805" y="101" width="370" height="1" fill="#303746"/>
     <text x="822" y="131" fill="#f8f8f2" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">kb_write({</text>
-    <text x="822" y="149" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">  &quot;title&quot;: &quot;Retry boundaries&quot;,</text>
-    <text x="822" y="167" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">  &quot;content&quot;: &quot;Cap retries at three attempts</text>
-    <text x="822" y="185" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">and surface the final error.&quot;,</text>
+    <text x="822" y="149" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">  &quot;title&quot;: &quot;Deploys reset retry budgets&quot;,</text>
+    <text x="822" y="167" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">  &quot;content&quot;: &quot;Reset per-worker retry</text>
+    <text x="822" y="185" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">counters when a deployment activates.&quot;,</text>
     <text x="822" y="203" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">  &quot;type&quot;: &quot;lesson&quot;, &quot;project&quot;:</text>
     <text x="822" y="221" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">&quot;example-app&quot;,</text>
     <text x="822" y="239" fill="#d6dae4" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">  &quot;tier&quot;: &quot;verified&quot;, &quot;tier_ref&quot;: &quot;#88&quot;</text>
     <text x="822" y="257" fill="#f8f8f2" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">})</text>
     <text x="822" y="293" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">Note #43 saved to</text>
-    <text x="822" y="311" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">agents/lessons/2026-09-18-retry-boundaries.</text>
-    <text x="822" y="329" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">md as verified; indexed 1 changed, 0</text>
-    <text x="822" y="347" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">unchanged</text>
+    <text x="822" y="311" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">agents/lessons/2026-09-18-deploys-reset-ret</text>
+    <text x="822" y="329" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">ry-budgets.md as verified; indexed 1</text>
+    <text x="822" y="347" fill="#50fa7b" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 400;" xml:space="preserve">changed, 0 unchanged</text>
   </g>
 </svg>

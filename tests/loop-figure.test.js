@@ -43,7 +43,7 @@ describe('README knowledge-loop figure', () => {
     assert.doesNotMatch(svg, /<script>/);
   });
 
-  it('contains only privacy-safe synthetic fixture and SVG text', () => {
+  it('excludes known private-data patterns from the fixture and SVG', () => {
     const publicBytes = `${fixtureText}\n${committedSvg}`;
     const forbidden = [
       /\/(?:Users|home)\//i,
@@ -64,25 +64,36 @@ describe('README knowledge-loop figure', () => {
     assert.ok(briefing.includes('Recently updated:'));
     assert.ok(briefing.some(line => line.startsWith('Before non-trivial work: kb_search(query, tags)')));
     assert.ok(briefing.some(line => line.startsWith('At a durable boundary, call kb_write directly;')));
+    assert.ok(briefing.some(line => line.endsWith('…')));
     assert.ok(briefing.some(line => line.includes('synthetic example')));
+    assert.match(briefing[0], /2 current facts/);
+    assert.ok(briefing.includes('- #41 example-app launch state (as of 2026-09-18)'));
+    assert.ok(briefing.includes('- Retry boundaries [example-app] (lesson)'));
+    assert.ok(!briefing.some(line => line.startsWith('standing: ')));
+    assert.doesNotMatch(briefing.join('\n'), /\b(?:verified|inferred|standing:)\b/i);
+    assert.doesNotMatch(briefing.join('\n'), /⚠/);
 
     const hint = getLineText(fixture.panels.find(panel => panel.id === 'hint'));
     assert.ok(hint.some(line => line.startsWith('KB HINT: the knowledge base has entries relevant to this prompt:')));
     assert.match(hintSource, /`KB HINT: the knowledge base has entries relevant to this prompt:/);
+    assert.ok(hint.some(line => line.includes('#42 "Retry boundaries" (lesson).')));
     assert.ok(hint.includes('(no hint)'));
+    assert.doesNotMatch(hint.join('\n'), /\b(?:verified|inferred|standing:)\b/i);
+    assert.doesNotMatch(hint.join('\n'), /⚠|unconfirmed model conclusion|treat it as a lead/i);
 
     const capture = fixture.panels.find(panel => panel.id === 'capture');
+    assert.equal(capture.subtitle, 'kb_write · synthetic input');
     assert.deepEqual(capture.input, {
-      title: 'Retry boundaries',
-      content: 'Cap retries at three attempts and surface the final error.',
+      title: 'Deploys reset retry budgets',
+      content: 'Reset per-worker retry counters when a deployment activates.',
       type: 'lesson',
       project: 'example-app',
       tier: 'verified',
       tier_ref: '#88',
     });
-    assert.match(
+    assert.equal(
       capture.lines.at(-1).text,
-      /^Note #43 saved to agents\/lessons\/\S+\.md as verified; indexed 1 changed, 0 unchanged$/,
+      'Note #43 saved to agents/lessons/2026-09-18-deploys-reset-retry-budgets.md as verified; indexed 1 changed, 0 unchanged',
     );
     assert.match(toolsSource, /`Note\$\{idNote\} saved to \$\{result\.path\} as \$\{result\.tier\}/);
   });
@@ -93,7 +104,7 @@ describe('README knowledge-loop figure', () => {
       '[![Three-step kb-graph loop: session briefing, targeted prompt hint, and durable capture](docs/assets/loop-demo.svg)](docs/assets/loop-demo.svg)',
     );
     const caption = readme.indexOf(
-      '*Static demonstration with synthetic data; open it for the full-size view. Claude Code is shown; Codex receives equivalent hook context; Cursor receives the session briefing only.*',
+      '*Static demonstration with synthetic data; open it for the full-size view. Claude Code is shown; Codex receives equivalent hook context; Cursor receives the session briefing and can call `kb_write` through MCP, but receives no pushed hints.*',
     );
     const intro = readme.indexOf('kb-graph gives Claude Code');
 

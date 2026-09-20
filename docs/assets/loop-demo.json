@@ -10,7 +10,7 @@
       "lines": [
         {
           "kind": "accent",
-          "text": "KB BRIEFING (knowledge-base MCP; 3 docs, 1 current facts; types: lesson 2, state 1)"
+          "text": "KB BRIEFING (knowledge-base MCP; 3 docs, 2 current facts; types: lesson 2, state 1)"
         },
         {
           "kind": "muted",
@@ -22,7 +22,7 @@
         },
         {
           "kind": "output",
-          "text": "- #41 example-app launch state (verified, as of 2026-09-18)"
+          "text": "- #41 example-app launch state (as of 2026-09-18)"
         },
         {
           "kind": "heading",
@@ -30,7 +30,7 @@
         },
         {
           "kind": "output",
-          "text": "- Retry boundaries [example-app] (lesson, verified)"
+          "text": "- Retry boundaries [example-app] (lesson)"
         },
         {
           "kind": "muted",
@@ -38,7 +38,7 @@
         },
         {
           "kind": "muted",
-          "text": "At a durable boundary, call kb_write directly; it owns duplicate gating and fails closed. Search and read before correcting an existing note, then pass supersedes."
+          "text": "At a durable boundary, call kb_write directly; it owns duplicate gating and fails closed. Search and read before correcting an existing note, then pass supersedes. …"
         }
       ]
     },
@@ -54,7 +54,7 @@
         },
         {
           "kind": "accent",
-          "text": "KB HINT: the knowledge base has entries relevant to this prompt: #42 \"Retry boundaries\" (lesson, verified). Check them with kb_read(id) before exploring from scratch."
+          "text": "KB HINT: the knowledge base has entries relevant to this prompt: #42 \"Retry boundaries\" (lesson). Check them with kb_read(id) before exploring from scratch."
         },
         {
           "kind": "spacer",
@@ -74,10 +74,10 @@
       "id": "capture",
       "step": "03",
       "title": "Durable capture",
-      "subtitle": "kb_write · sanitized",
+      "subtitle": "kb_write · synthetic input",
       "input": {
-        "title": "Retry boundaries",
-        "content": "Cap retries at three attempts and surface the final error.",
+        "title": "Deploys reset retry budgets",
+        "content": "Reset per-worker retry counters when a deployment activates.",
         "type": "lesson",
         "project": "example-app",
         "tier": "verified",
@@ -90,11 +90,11 @@
         },
         {
           "kind": "output",
-          "text": "  \"title\": \"Retry boundaries\","
+          "text": "  \"title\": \"Deploys reset retry budgets\","
         },
         {
           "kind": "output",
-          "text": "  \"content\": \"Cap retries at three attempts and surface the final error.\","
+          "text": "  \"content\": \"Reset per-worker retry counters when a deployment activates.\","
         },
         {
           "kind": "output",
@@ -114,7 +114,7 @@
         },
         {
           "kind": "success",
-          "text": "Note #43 saved to agents/lessons/2026-09-18-retry-boundaries.md as verified; indexed 1 changed, 0 unchanged"
+          "text": "Note #43 saved to agents/lessons/2026-09-18-deploys-reset-retry-budgets.md as verified; indexed 1 changed, 0 unchanged"
         }
       ]
     }
