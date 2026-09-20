@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
+import {
+  existsSync, mkdirSync, readFileSync, rmSync,
+} from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { stableNodePath } from './runtime-node.js';
 import { AGENT } from '../process-ancestry.js';
 import { fileURLToPath } from 'url';
-import { writePrivateFile } from '../private-file.js';
+import { writePrivateFile, writePrivateFiles } from '../private-file.js';
 
 export const SUPPORTED_AGENTS = ['claude', 'codex', 'gemini', 'cursor'];
 export const KB_MCP_SERVER_NAME = 'knowledge-base';
@@ -31,17 +33,50 @@ export function mcpServerConfig(agent = null) {
 
 export const KB_MCP_SERVER_CONFIG = mcpServerConfig();
 
-// Absent and unreadable are different answers. Treating both as "empty config"
-// means one bad parse rewrites the file as nothing but our own entry, and
-// ~/.claude.json holds the user's whole Claude Code configuration.
+// Absent and invalid/unreadable are different answers. Treating either invalid
+// JSON or an unsafe shape as "empty config" would replace the file with our
+// entry, and ~/.claude.json holds the user's whole Claude Code configuration.
 function readJson(path) {
   if (!existsSync(path)) return {};
   const raw = readFileSync(path, 'utf-8');
+  let config;
   try {
-    return JSON.parse(raw);
+    config = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`${path} is not valid JSON (${err.message}). Refusing to overwrite it.`);
+    throw new Error(`${path} is not valid JSON (${err.message}). Refusing registration because it cannot be safely inspected.`);
   }
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(`${path} must contain a JSON object. Refusing registration because it cannot be safely inspected.`);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'mcpServers')
+    && (config.mcpServers === null
+      || typeof config.mcpServers !== 'object'
+      || Array.isArray(config.mcpServers))) {
+    throw new Error(`${path} field "mcpServers" must be a JSON object. Refusing registration because it cannot be safely inspected.`);
+  }
+  return config;
+}
+
+export function findCursorWorkspaceConfig(cwd, homeDir = homedir()) {
+  const home = resolve(homeDir);
+  let current = resolve(cwd);
+
+  while (current !== home) {
+    const parent = dirname(current);
+    if (parent === current) break;
+
+    const path = join(current, '.cursor', 'mcp.json');
+    if (existsSync(path)) {
+      const config = readJson(path);
+      const servers = config?.mcpServers;
+      if (servers && typeof servers === 'object'
+        && Object.prototype.hasOwnProperty.call(servers, KB_MCP_SERVER_NAME)) {
+        return path;
+      }
+    }
+    current = parent;
+  }
+  return null;
 }
 
 export function getAgentConfigPath(agent, homeDir = homedir()) {
@@ -84,6 +119,42 @@ function registeredEntrypoint(config) {
   return Array.isArray(args) ? args[0] ?? null : null;
 }
 
+function loadRegistrationTarget(agent, path) {
+  const config = readJson(path);
+  return {
+    agent,
+    path,
+    config,
+    from: registeredEntrypoint(config),
+  };
+}
+
+function registrationResult(target, written) {
+  const { agent, path, from } = target;
+  return { agent, path, written, from, to: KB_ENTRYPOINT_PATH };
+}
+
+function prepareRegistration(target) {
+  const { agent, config, path } = target;
+  if (!config.mcpServers) config.mcpServers = {};
+
+  const generated = mcpServerConfig(agent);
+  const existing = config.mcpServers[KB_MCP_SERVER_NAME];
+  const preserved = existing && typeof existing === 'object' && !Array.isArray(existing)
+    ? existing
+    : {};
+  const existingEnv = preserved.env;
+  const preservedEnv = existingEnv && typeof existingEnv === 'object' && !Array.isArray(existingEnv)
+    ? existingEnv
+    : {};
+  config.mcpServers[KB_MCP_SERVER_NAME] = {
+    ...preserved,
+    ...generated,
+    env: { ...preservedEnv, ...generated.env },
+  };
+  return { path, content: JSON.stringify(config, null, 2) };
+}
+
 // The [mcp_servers.knowledge-base] block Codex needs, ready to paste. TOML
 // basic strings take the same escapes JSON does, so JSON.stringify is a
 // correct quoter for a path here.
@@ -116,37 +187,85 @@ export function codexRegistrationSnippet() {
  * Every agent comes back with an outcome, so a caller cannot mistake a refusal
  * for a write it simply didn't look at.
  */
-export function registerAgents(agents, homeDir = homedir(), { force = false } = {}) {
-  return agents.map(agent => {
+export function registerAgents(agents, homeDir = homedir(), {
+  force = false,
+  cwd,
+  privateFileOptions,
+} = {}) {
+  const plans = [];
+  for (const agent of agents) {
     const path = getAgentConfigPath(agent, homeDir);
     // Codex's config.toml is hand-curated (enabled_tools, per-tool
     // approval_mode blocks) and there is no TOML parser in this tree, so the
     // registration it needs is printed for a human to paste rather than
     // written — `--force` has nothing to force here.
     if (agent === AGENT.CODEX) {
-      return { agent, path, written: false, manual: true, snippet: codexRegistrationSnippet(), from: null, to: KB_ENTRYPOINT_PATH };
-    }
-    const config = readJson(path);
-    const from = registeredEntrypoint(config);
-    if (from !== null && from !== KB_ENTRYPOINT_PATH && !force) {
-      return { agent, path, written: false, from, to: KB_ENTRYPOINT_PATH };
+      plans.push({
+        manual: {
+          agent,
+          path,
+          written: false,
+          manual: true,
+          snippet: codexRegistrationSnippet(),
+          from: null,
+          to: KB_ENTRYPOINT_PATH,
+        },
+      });
+      continue;
     }
 
-    mkdirSync(join(path, '..'), { recursive: true });
-    if (!config.mcpServers) config.mcpServers = {};
-    const generated = mcpServerConfig(agent);
-    const existingEnv = config.mcpServers[KB_MCP_SERVER_NAME]?.env;
-    const preservedEnv = existingEnv && typeof existingEnv === 'object' && !Array.isArray(existingEnv)
-      ? existingEnv
-      : {};
-    config.mcpServers[KB_MCP_SERVER_NAME] = {
-      ...generated,
-      env: { ...preservedEnv, ...generated.env },
-    };
+    const targetPaths = [path];
+    if (agent === AGENT.CURSOR && cwd !== undefined) {
+      const workspacePath = findCursorWorkspaceConfig(cwd, homeDir);
+      if (workspacePath !== null) targetPaths.push(workspacePath);
+    }
+
+    // Read and evaluate every target before any invocation-wide write. Cursor
+    // additionally treats home and workspace configs as one refusal unit.
+    const targets = targetPaths.map(targetPath => loadRegistrationTarget(agent, targetPath));
+    const refused = !force && targets.some(
+      target => target.from !== null && target.from !== KB_ENTRYPOINT_PATH,
+    );
+    plans.push({ targets, refused });
+  }
+
+  // Finish deriving every writable config before the first filesystem write.
+  // A malformed or structurally unsafe later agent must not leave an earlier
+  // agent updated by the same invocation.
+  for (const plan of plans) {
+    if (!plan.manual && !plan.refused) {
+      plan.files = plan.targets.map(prepareRegistration);
+    }
+  }
+
+  // Stage and commit every writable agent plan in one transaction. A late
+  // Cursor target failure must not leave an earlier Claude/Gemini target
+  // updated by the same registerAgents invocation.
+  const writableFiles = plans.flatMap(plan => plan.files ?? []);
+  for (const file of writableFiles) {
+    mkdirSync(dirname(file.path), { recursive: true });
     // Remove the fixed-name temp file used before private writes gained
     // collision-resistant, ignored names.
-    rmSync(`${path}.kb-tmp`, { force: true });
-    writePrivateFile(path, JSON.stringify(config, null, 2));
-    return { agent, path, written: true, from, to: KB_ENTRYPOINT_PATH };
-  });
+    rmSync(`${file.path}.kb-tmp`, { force: true });
+  }
+  if (writableFiles.length === 1) {
+    writePrivateFile(writableFiles[0].path, writableFiles[0].content);
+  } else if (writableFiles.length > 1) {
+    writePrivateFiles(writableFiles, privateFileOptions);
+  }
+
+  const results = [];
+  for (const plan of plans) {
+    if (plan.manual) {
+      results.push(plan.manual);
+      continue;
+    }
+    if (plan.refused) {
+      results.push(...plan.targets.map(target => registrationResult(target, false)));
+      continue;
+    }
+
+    results.push(...plan.targets.map(target => registrationResult(target, true)));
+  }
+  return results;
 }
