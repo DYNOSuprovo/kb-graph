@@ -61,7 +61,7 @@ router.get('/search', (req, res) => {
       // Filter via vault_files join — do a lightweight DB query
       const projectDocIds = new Set(
         getDb()
-          .prepare('SELECT document_id FROM vault_files WHERE project = ?')
+          .prepare('SELECT document_id FROM vault_files WHERE missing_at IS NULL AND project = ?')
           .all(project)
           .map(r => r.document_id)
       );
@@ -117,7 +117,7 @@ router.get('/context', async (req, res) => {
     if (project) {
       const projectDocIds = new Set(
         getDb()
-          .prepare('SELECT document_id FROM vault_files WHERE project = ?')
+          .prepare('SELECT document_id FROM vault_files WHERE missing_at IS NULL AND project = ?')
           .all(project)
           .map(r => r.document_id)
       );
@@ -134,7 +134,7 @@ router.get('/context', async (req, res) => {
 
     for (const doc of filtered) {
       const vf = db
-        .prepare('SELECT summary, key_topics FROM vault_files WHERE document_id = ?')
+        .prepare('SELECT summary, key_topics FROM vault_files WHERE missing_at IS NULL AND document_id = ?')
         .get(doc.id);
 
       sources.push({ id: doc.id, title: doc.title });

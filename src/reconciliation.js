@@ -275,8 +275,9 @@ export function supersessionEvidenceCandidates(db = getDb(), { since = null, lim
     SELECT d.id, d.title, d.content, d.created_at, d.superseded_at, d.superseded_by, vf.content_hash,
            (CASE WHEN d.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS title_hit
     FROM documents d
-    LEFT JOIN vault_files vf ON vf.document_id = d.id
+    LEFT JOIN vault_files vf ON vf.document_id = d.id AND vf.missing_at IS NULL
     WHERE d.doc_type != 'archive'
+      AND d.detached_at IS NULL
       AND (d.title LIKE ? ESCAPE '\\' OR d.tags LIKE ? ESCAPE '\\')
       AND d.content LIKE ? ESCAPE '\\'
     ORDER BY d.created_at ASC, d.id ASC
@@ -284,8 +285,10 @@ export function supersessionEvidenceCandidates(db = getDb(), { since = null, lim
   const replacementNotes = db.prepare(`
     SELECT d.id, d.title, d.content, d.created_at, vf.content_hash
     FROM documents d
-    LEFT JOIN vault_files vf ON vf.document_id = d.id
-    WHERE d.superseded_at IS NULL AND d.doc_type != 'archive'
+    LEFT JOIN vault_files vf ON vf.document_id = d.id AND vf.missing_at IS NULL
+    WHERE d.superseded_at IS NULL
+      AND d.detached_at IS NULL
+      AND d.doc_type != 'archive'
       AND d.id != ? AND d.created_at > ?
       AND (d.title LIKE ? ESCAPE '\\' OR d.tags LIKE ? ESCAPE '\\')
       AND d.content LIKE ? ESCAPE '\\'
@@ -375,7 +378,8 @@ function applyFactDecision(db, group, decisionItems, beforeSnapshot, { dryRun = 
 
 function documentSnapshot(db, id) {
   return db.prepare(`
-    SELECT d.id, d.title, d.content, d.superseded_at, d.superseded_by, d.superseded_reason,
+    SELECT d.id, d.title, d.content, d.detached_at,
+           d.superseded_at, d.superseded_by, d.superseded_reason,
            vf.content_hash
     FROM documents d
     LEFT JOIN vault_files vf ON vf.document_id = d.id
@@ -389,6 +393,7 @@ function sameDocSnapshot(expected, actual) {
     && expected.title === actual.title
     && expected.content === actual.content
     && expected.content_hash === actual.content_hash
+    && expected.detached_at === actual.detached_at
     && expected.superseded_at === actual.superseded_at
     && expected.superseded_by === actual.superseded_by;
 }

@@ -13,6 +13,7 @@ import {
   setupJobPolicy,
   SetupVaultSafetyError,
 } from '../src/cli/setup.js';
+import { configureKnowledgeBaseConnection } from '../src/db.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -140,6 +141,7 @@ test('automatic setup fails closed before creating the default empty vault or jo
     const migrated = run('migrate');
     assert.equal(migrated.status, 0, migrated.stderr);
     const database = new Database(join(kbDir, 'kb.db'));
+    configureKnowledgeBaseConnection(database);
     database.prepare(
       "INSERT INTO documents (title, content, doc_type) VALUES ('existing', 'kept', 'note')"
     ).run();

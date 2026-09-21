@@ -97,13 +97,13 @@ export async function semanticSearch(query, { limit = 10, project, type, include
     FROM embeddings e
     JOIN documents d ON d.id = e.document_id
   `;
-  const conditions = [];
+  const conditions = ['d.detached_at IS NULL'];
   const params = [];
 
   if (!includeSuperseded) conditions.push('d.superseded_at IS NULL');
   if (project) {
     sql += ' JOIN vault_files vf ON vf.document_id = e.document_id';
-    conditions.push('vf.project = ?');
+    conditions.push('vf.missing_at IS NULL', 'vf.project = ?');
     params.push(project);
   }
   if (type) {
@@ -142,12 +142,14 @@ export async function similarDocs(content, { limit = 10, includeSuperseded = fal
 
   // Dedup/related-links compare against LIVE notes only — a retired note is
   // not "existing current content", and a fresh note should not link to it.
-  const supersededFilter = includeSuperseded ? '' : 'WHERE d.superseded_at IS NULL';
+  const lifecycleFilter = includeSuperseded
+    ? 'WHERE d.detached_at IS NULL'
+    : 'WHERE d.detached_at IS NULL AND d.superseded_at IS NULL';
   const rows = getDb().prepare(`
     SELECT e.document_id, e.vault_path, e.embedding, d.title, d.tags
     FROM embeddings e
     JOIN documents d ON d.id = e.document_id
-    ${supersededFilter}
+    ${lifecycleFilter}
   `).all();
 
   const scored = rows.map(row => ({

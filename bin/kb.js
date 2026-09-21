@@ -282,13 +282,19 @@ const COMMANDS = {
     }),
   },
   vault: {
-    summary: 'Reindex Obsidian vault (embeddings on; large prune requires an exact --confirm-prune count)',
-    args: 'reindex',
-    boolean: ['--no-embeddings'],
-    valueEq: ['--confirm-prune'],
+    summary: 'Reindex the vault or explicitly purge detached rows after a grace period',
+    args: '<reindex | purge-detached>',
+    boolean: ['--no-embeddings', '--apply'],
+    valueEq: ['--confirm-prune', '--grace-days', '--confirm-purge', '--preview-token'],
     run: a => {
-      if (a[0] !== 'reindex') { console.error(usageFor('vault')); process.exit(2); }
-      return import('../src/cli/vault-cli.js').then(m => m.vaultReindex(a.slice(1)));
+      if (a[0] === 'reindex') {
+        return import('../src/cli/vault-cli.js').then(m => m.vaultReindex(a.slice(1)));
+      }
+      if (a[0] === 'purge-detached') {
+        return import('../src/cli/vault-cli.js').then(m => m.vaultPurgeDetached(a.slice(1)));
+      }
+      console.error(usageFor('vault'));
+      process.exit(2);
     },
   },
 };

@@ -61,7 +61,7 @@ function rowsById(db, ids) {
       vf.source AS vault_source, vf.summary, vf.key_topics
     FROM documents d
     LEFT JOIN vault_files vf ON vf.document_id = d.id
-    WHERE d.id IN (${placeholders})
+    WHERE d.id IN (${placeholders}) AND d.detached_at IS NULL
   `).all(...ids);
   return new Map(rows.map(row => [row.id, row]));
 }
@@ -111,7 +111,9 @@ function currentDocuments(db, { query, limit, project, type }) {
       SELECT d.id
       FROM vault_files vf
       JOIN documents d ON d.id = vf.document_id
-      WHERE d.superseded_at IS NULL
+      WHERE vf.missing_at IS NULL
+        AND d.detached_at IS NULL
+        AND d.superseded_at IS NULL
     `;
     const params = [];
     if (project) { sql += ' AND vf.project = ?'; params.push(project); }
@@ -140,7 +142,7 @@ function supersededDocuments(db, { query, limit, project, type, current }) {
   if (current.length) {
     const placeholders = current.map(() => '?').join(', ');
     ids.push(...db.prepare(
-      `SELECT id FROM documents WHERE superseded_by IN (${placeholders})`
+      `SELECT id FROM documents WHERE detached_at IS NULL AND superseded_by IN (${placeholders})`
     ).all(...current.map(doc => doc.id)).map(row => row.id));
   }
 

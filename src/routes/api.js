@@ -18,6 +18,7 @@ import { ingestFile, ingestDirectory } from '../ingest.js';
 import { indexVault, VaultPruneRefusedError } from '../vault/indexer.js';
 import { normalizeTagString } from '../tags.js';
 import { SURFACE } from '../retrieval.js';
+import { rebuildTriggerIndex } from '../trigger-relevance.js';
 
 const router = Router();
 const UPLOAD_FILE_LIMIT = 10;
@@ -182,6 +183,7 @@ router.delete('/api/documents/:id', (req, res) => {
     if (filePath && existsSync(filePath)) {
       try { unlinkSync(filePath); } catch {}
     }
+    rebuildTriggerIndex();
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });

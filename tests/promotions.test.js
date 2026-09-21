@@ -44,6 +44,15 @@ function resetLog() {
   rmSync(PROMOTIONS_LOG_DIR, { recursive: true, force: true });
 }
 
+function resetDocuments(db) {
+  db.exec(`
+    DELETE FROM retrievals;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `);
+}
+
 beforeEach(() => {
   resetLog();
   rmSync(TRIGGERS_LOG_DIR, { recursive: true, force: true });
@@ -178,7 +187,7 @@ describe('dedup across runs', () => {
     // Exercises the actual entry point (runPromotionsCli -> getDb()), not the
     // exported computePromotionDecisions helper the tests above use directly.
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'cli dedup note' });
     pushAndFollow(db, doc);
 
@@ -244,7 +253,7 @@ describe('read-only on the DB', () => {
 describe('--json output and CLI wiring', () => {
   it('prints the documented top-level shape via the real CLI entry point', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'json note' });
     pushAndFollow(db, doc);
 
@@ -279,7 +288,7 @@ describe('--json output and CLI wiring', () => {
 describe('apply path (live by default)', () => {
   it('an eligible followed doc is promoted to observed in the DB, with confirmed_by recorded', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'apply me' });
     pushAndFollow(db, doc);
 
@@ -298,7 +307,7 @@ describe('apply path (live by default)', () => {
 
   it('a doc already in the log is not re-applied, even though it is still eligible', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'already logged' });
     pushAndFollow(db, doc);
     mkdirSync(PROMOTIONS_LOG_DIR, { recursive: true });
@@ -319,7 +328,7 @@ describe('apply path (live by default)', () => {
 describe('--dry-run', () => {
   it('restores log-only behavior: zero document writes', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'dry run note' });
     pushAndFollow(db, doc);
 
@@ -341,7 +350,7 @@ describe('--dry-run', () => {
 describe('pre-cutoff exception', () => {
   it('a pre-cutoff trigger candidate is logged with applied:false and the caveat; tier is unchanged', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'pre-cutoff note' });
     writeFileSync(join(TRIGGERS_LOG_DIR, 'fires-2026-08-10.jsonl'), JSON.stringify({
       ts: '2026-08-10T04:00:00.000Z', session: 's1', cwd: '/tmp', command: 'x', matched: [{ id: doc, hits: 1 }], emitted: true,
@@ -367,7 +376,7 @@ describe('pre-cutoff exception', () => {
 describe('confirmed_by clamping', () => {
   it('a legacy hint key with a very long query is truncated to fit REF_MAX_CHARS, and still applies', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'long-query note' });
     // event_id NULL -> follow-through's eventKey falls back to
     // ts:${session}|hint|${created_at}|${query}, embedding the query
@@ -399,7 +408,7 @@ describe('confirmed_by clamping', () => {
 describe('per-candidate error isolation', () => {
   it('a candidate whose confirmed_by still overflows after clamping fails alone; clean candidates before and after still apply with audit lines', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     // Clamping only clips the event_id — session, followed_at and
     // read_latency_s are kept intact by design (see buildConfirmedBy's
     // comment), so a pathological session is the deterministic way to make
@@ -436,7 +445,7 @@ describe('per-candidate error isolation', () => {
 describe('applyDecision outcome contract', () => {
   it('a doc gone by apply time reports applied:false with a reason, never a bare success', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'vanishing note' });
     pushAndFollow(db, doc);
     const { candidates } = computePromotionDecisions(db);
@@ -451,7 +460,7 @@ describe('applyDecision outcome contract', () => {
 
   it('a vault-file failure past a successful DB promotion still reports applied:true, with the failure noted', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const doc = insertDoc(db, { title: 'no vault file for this one' });
     pushAndFollow(db, doc);
     const { candidates } = computePromotionDecisions(db);
@@ -470,7 +479,7 @@ describe('applyDecision outcome contract', () => {
 describe('incremental audit log', () => {
   it('every candidate this run gets its own log line, applied or not', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const a = insertDoc(db, { title: 'first' });
     const b = insertDoc(db, { title: 'second' });
     pushAndFollow(db, a, { session: 's-a', eventId: 'e-a' });
@@ -514,7 +523,7 @@ describe('setNoteTier failure is not tolerated (matches kb_promote) and retries'
 
   it('a setNoteTier failure yields applied:false + error, leaving the DB tier for a reindex to reconcile', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents; DELETE FROM vault_files;');
+    resetDocuments(db);
     const doc = seedDocWithMissingVaultFile(db, 'vault file missing on disk');
 
     await runQuietly([]);
@@ -531,7 +540,7 @@ describe('setNoteTier failure is not tolerated (matches kb_promote) and retries'
 
   it('an error-row candidate is retried next run, and succeeds once the underlying failure is fixed', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents; DELETE FROM vault_files;');
+    resetDocuments(db);
     const doc = seedDocWithMissingVaultFile(db, 'retryable note');
 
     await runQuietly([]); // first run: fails, applied:false + error
@@ -573,7 +582,7 @@ describe('dedup is unaffected for non-error rows', () => {
 
   it('a dry-run row and a pre-cutoff caveat row still dedup on rerun, since neither carries an error', async () => {
     const db = getDb();
-    db.exec('DELETE FROM retrievals; DELETE FROM documents;');
+    resetDocuments(db);
     const dryRunDoc = insertDoc(db, { title: 'dry run dedup check' });
     pushAndFollow(db, dryRunDoc, { session: 's-dry', eventId: 'e-dry' });
     await runQuietly(['--dry-run']); // first pass, logs a dry-run row (applied:false, no error)

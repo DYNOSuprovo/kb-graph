@@ -13,7 +13,12 @@ const run = promisify(execFile);
 
 describe('authored-write process lock', () => {
   it('serializes duplicate decisions across processes', async () => {
-    getDb().exec('DELETE FROM embeddings; DELETE FROM documents;');
+    getDb().exec(`
+      DELETE FROM embeddings;
+      UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+      DELETE FROM vault_files;
+      DELETE FROM documents;
+    `);
     const arrivalBarrierPath = join(process.env.KB_DIR, 'write-lock-process-arrivals');
     const decisionBarrierPath = join(process.env.KB_DIR, 'write-lock-process-decisions');
     const writeNoteUrl = new URL('../src/write-note.js', import.meta.url).href;

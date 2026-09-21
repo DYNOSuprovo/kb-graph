@@ -8,7 +8,9 @@ export function getRecentNotes(vaultPath, days = 7) {
   const rows = getDb().prepare(`
     SELECT vault_path, title, note_type, project, tags
     FROM vault_files
-    WHERE indexed_at > ? AND note_type NOT IN ('inbox', 'archive')
+    WHERE missing_at IS NULL
+      AND indexed_at > ?
+      AND note_type NOT IN ('inbox', 'archive')
     ORDER BY indexed_at DESC
   `).all(cutoff);
 
@@ -66,6 +68,8 @@ export function getNearDupPairs(limit = 15) {
     JOIN documents a ON a.id = l.from_id
     JOIN documents b ON b.id = l.to_id
     WHERE l.kind = 'near-dup'
+      AND a.detached_at IS NULL
+      AND b.detached_at IS NULL
     ORDER BY l.score DESC LIMIT ?
   `).all(limit);
 }

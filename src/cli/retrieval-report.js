@@ -51,6 +51,7 @@ export function retrievalReport(db = getDb()) {
     FROM documents d
     LEFT JOIN (${RETRIEVED_DOC_IDS}) r ON r.doc_id = d.id
     WHERE d.superseded_at IS NULL
+      AND d.detached_at IS NULL
   `).get();
 
   const byType = db.prepare(`
@@ -58,6 +59,7 @@ export function retrievalReport(db = getDb()) {
     FROM documents d
     LEFT JOIN (${RETRIEVED_DOC_IDS}) r ON r.doc_id = d.id
     WHERE d.superseded_at IS NULL
+      AND d.detached_at IS NULL
     GROUP BY d.doc_type
     ORDER BY total DESC
   `).all();
@@ -77,6 +79,7 @@ export function retrievalReport(db = getDb()) {
       FROM retrievals WHERE doc_id IS NOT NULL GROUP BY doc_id
     ) r ON r.doc_id = d.id
     WHERE d.superseded_at IS NULL
+      AND d.detached_at IS NULL
       AND d.created_at >= datetime('now', '-90 days')
   `).get();
 
