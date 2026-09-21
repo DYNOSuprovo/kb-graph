@@ -4,6 +4,7 @@
 import { randomUUID } from 'crypto';
 import { getDb, getDocument, getHealth, liveTierCounts } from '../db.js';
 import { isBatchCall } from '../claude-cli.js';
+import { validateHookHost } from '../hook-host.js';
 import { READ_SURFACES, SURFACE, logRetrieval, resolveSessionId } from '../retrieval.js';
 import { recordSessionMap } from '../session-map.js';
 import { TIER, tierLabel, tiersDiscriminate } from '../tiers.js';
@@ -209,6 +210,7 @@ export async function wakeupHook(args = []) {
   } catch {
     // fall through with hookInput = {}
   }
+  if (!validateHookHost(hookInput, agent).ok) process.exit(0);
   // Refresh the harness_pid -> session_id map on every SessionStart (startup,
   // resume, clear, compact) — each of those can mint a fresh id without a
   // fresh process, and this is one of the two places that ever sees it.
