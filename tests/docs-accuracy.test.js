@@ -32,13 +32,38 @@ const canonicalLabels = new Set([
   'help wanted',
   'question',
 ]);
+const between = (text, start, end) => text.split(start)[1]?.split(end)[0] ?? '';
 
 describe('public documentation contract', () => {
   it('keeps the README concise and honest about data egress', () => {
     assert.doesNotMatch(readme, /Nothing leaves your machine|No external services/i);
     assert.match(readme, /may send selected transcript or note content/i);
-    assert.match(readme, /not currently published on npm/i);
+    assert.match(readme, /npm install -g kb-graph/i);
     assert.match(readme, /register --force/);
+  });
+
+  it('documents the supported install and durable-state boundaries', () => {
+    const docs = [
+      { full: readme, install: between(readme, '## Install', '## What setup changes') },
+      { full: onboarding, install: between(onboarding, '# Onboarding', '## Verify the install') },
+    ];
+    for (const { full, install } of docs) {
+      assert.match(install, /npm install -g kb-graph/i);
+      assert.match(install, /npx/i);
+      assert.match(install, /not supported|Do not use/i);
+      assert.match(install, /better-sqlite3/i);
+      assert.match(install, /compiler|node-gyp/i);
+      assert.match(install, /KB_DIR/i);
+      assert.match(install, /models|embedding/i);
+      assert.match(install, /Docker Compose/i);
+      assert.match(install, /source-only/i);
+      assert.match(install, /Dockerfile/i);
+      assert.match(full, /global (?:npm )?prefix|Node\/global prefix/i);
+      assert.match(full, /register --force/i);
+      assert.match(full, /restart/i);
+      assert.match(full, /agent|Cursor/i);
+    }
+    assert.doesNotMatch(readme, /img\.shields\.io\/npm|npmjs\.com\/package/);
   });
 
   it('documents the shipped runtimes and every scheduled writer', () => {
