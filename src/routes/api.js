@@ -15,7 +15,7 @@ import {
   getStats,
 } from '../db.js';
 import { ingestFile, ingestDirectory } from '../ingest.js';
-import { indexVault } from '../vault/indexer.js';
+import { indexVault, VaultPruneRefusedError } from '../vault/indexer.js';
 import { normalizeTagString } from '../tags.js';
 import { SURFACE } from '../retrieval.js';
 
@@ -224,6 +224,16 @@ router.post('/api/vault/reindex', authMiddleware, async (req, res) => {
     const result = await indexVault(vaultPath, { embeddings: true });
     return res.json(result);
   } catch (err) {
+    if (err instanceof VaultPruneRefusedError) {
+      return res.status(409).json({
+        error: err.message,
+        code: err.code,
+        existing_count: err.safety.existingCount,
+        scanned_count: err.safety.scannedCount,
+        missing_count: err.safety.missingCount,
+        limit: err.safety.limit,
+      });
+    }
     return res.status(500).json({ error: err.message });
   }
 });

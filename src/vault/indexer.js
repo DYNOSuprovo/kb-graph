@@ -7,13 +7,83 @@ import { filterAliases } from '../hint-relevance.js';
 import { filterTriggers, rebuildTriggerIndex } from '../trigger-relevance.js';
 import {
   insertDocument, updateDocumentFull, getDb,
-  getVaultFile, upsertVaultFile, deleteVaultFile, getAllVaultPaths,
+  getVaultFile, upsertVaultFile, deleteVaultFile, getAllVaultPaths, setMeta,
 } from '../db.js';
 import { LOGS_DIR } from '../paths.js';
 
 let indexQueue = Promise.resolve();
 
 export const VAULT_INDEX_RACE_LOG = join(LOGS_DIR, 'vault-index-races.jsonl');
+export const VAULT_INDEX_SAFETY_LOG = join(LOGS_DIR, 'vault-index-safety.jsonl');
+export const PRUNE_ABSOLUTE_LIMIT = 5;
+export const PRUNE_FRACTION_LIMIT = 0.02;
+
+export class VaultPruneRefusedError extends Error {
+  constructor(safety) {
+    super(
+      `Vault reindex refused before document changes: ${safety.missingCount} of `
+      + `${safety.existingCount} indexed paths are missing (${safety.reason}). `
+      + `Review the vault selection, then rerun with --confirm-prune=${safety.missingCount} `
+      + 'only if this exact cleanup is intentional.'
+    );
+    this.name = 'VaultPruneRefusedError';
+    this.code = 'KB_VAULT_PRUNE_REFUSED';
+    this.safety = safety;
+  }
+}
+
+export function pruneLimit(existingCount) {
+  return Math.max(PRUNE_ABSOLUTE_LIMIT, Math.floor(existingCount * PRUNE_FRACTION_LIMIT));
+}
+
+export function evaluatePruneSafety({
+  existingCount,
+  scannedCount,
+  missingCount,
+  confirmPrune = null,
+}) {
+  const limit = pruneLimit(existingCount);
+  let reason = null;
+  if (existingCount > 0 && scannedCount === 0) {
+    reason = 'zero_markdown_files';
+  } else if (missingCount > limit) {
+    reason = 'blast_radius';
+  }
+  const confirmed = Number.isInteger(confirmPrune) && confirmPrune === missingCount;
+  return {
+    allowed: reason === null || confirmed,
+    override: reason !== null && confirmed,
+    reason,
+    existingCount,
+    scannedCount,
+    missingCount,
+    limit,
+  };
+}
+
+function recordPruneSafety(event, safety) {
+  const details = {
+    ts: new Date().toISOString(),
+    event,
+    reason: safety.reason,
+    existing_count: safety.existingCount,
+    scanned_count: safety.scannedCount,
+    missing_count: safety.missingCount,
+    limit: safety.limit,
+    pid: process.pid,
+  };
+  try {
+    mkdirSync(LOGS_DIR, { recursive: true });
+    appendFileSync(VAULT_INDEX_SAFETY_LOG, `${JSON.stringify(details)}\n`);
+  } catch {
+    // Safety telemetry must not weaken the decision it reports.
+  }
+  try {
+    setMeta('last_reindex_refusal', event === 'prune_refused' ? JSON.stringify(details) : '');
+  } catch {
+    // The append-only log remains the fallback signal if DB telemetry fails.
+  }
+}
 
 const IGNORE_DIRS = new Set(['.obsidian', '.trash', '.git', '_assets', '_system', 'node_modules', 'textgenerator']);
 const IGNORE_FILES = new Set(['.DS_Store', 'Thumbs.db']);
@@ -59,10 +129,10 @@ function hashContent(content) {
   return createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
 
-export async function indexVault(vaultPath, { embeddings = false } = {}) {
+export async function indexVault(vaultPath, { embeddings = false, confirmPrune = null } = {}) {
   const queuedRun = indexQueue.then(
-    () => _indexVault(vaultPath, { embeddings }),
-    () => _indexVault(vaultPath, { embeddings }),
+    () => _indexVault(vaultPath, { embeddings, confirmPrune }),
+    () => _indexVault(vaultPath, { embeddings, confirmPrune }),
   );
   indexQueue = queuedRun.catch(() => {});
   return queuedRun;
@@ -117,7 +187,7 @@ async function _indexVaultFile(vaultPath, vaultFilePath, { embeddings = false, d
   return result;
 }
 
-async function _indexVault(vaultPath, { embeddings = false } = {}) {
+async function _indexVault(vaultPath, { embeddings = false, confirmPrune = null } = {}) {
   // Snapshot the derived index before the source-of-truth files. A write that
   // lands after this point is absent from existingPaths and cannot be pruned
   // by this run. The final on-disk check below closes the remaining same-path
@@ -125,7 +195,22 @@ async function _indexVault(vaultPath, { embeddings = false } = {}) {
   // cannot serialize one another.
   const existingPaths = new Map(getAllVaultPaths().map(r => [r.vault_path, r.content_hash]));
   const files = scanVault(vaultPath);
-  const seenPaths = new Set();
+  const seenPaths = new Set(files.map(filePath => relative(vaultPath, filePath)));
+  let missingCount = 0;
+  for (const path of existingPaths.keys()) {
+    if (!seenPaths.has(path)) missingCount += 1;
+  }
+  const safety = evaluatePruneSafety({
+    existingCount: existingPaths.size,
+    scannedCount: files.length,
+    missingCount,
+    confirmPrune,
+  });
+  if (!safety.allowed) {
+    recordPruneSafety('prune_refused', safety);
+    throw new VaultPruneRefusedError(safety);
+  }
+  if (safety.override) recordPruneSafety('prune_override', safety);
 
   let indexed = 0;
   let skipped = 0;
@@ -137,7 +222,6 @@ async function _indexVault(vaultPath, { embeddings = false } = {}) {
 
   for (const filePath of files) {
     const relPath = relative(vaultPath, filePath);
-    seenPaths.add(relPath);
 
     try {
       const content = readFileSync(filePath, 'utf-8');
@@ -172,6 +256,11 @@ async function _indexVault(vaultPath, { embeddings = false } = {}) {
   deleted += pruned.deleted;
   if (embeddingHelpers) {
     embedded += await embedMissingNonVaultDocuments(embeddingHelpers, errors);
+  }
+  try {
+    setMeta('last_reindex_refusal', '');
+  } catch {
+    // Health telemetry cannot turn a completed index into a reported failure.
   }
 
   return { indexed, skipped, deleted, preserved: pruned.preserved, embedded, errors, total: files.length };

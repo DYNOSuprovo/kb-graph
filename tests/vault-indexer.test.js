@@ -4,11 +4,24 @@
 import './helpers/tmp-kb.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'fs';
+import {
+  mkdtempSync, writeFileSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { getDb } from '../src/db.js';
-import { scanVault, indexVaultFile, pruneMissingVaultFiles, VAULT_INDEX_RACE_LOG } from '../src/vault/indexer.js';
+import { getDb, getHealth } from '../src/db.js';
+import {
+  evaluatePruneSafety,
+  indexVault,
+  indexVaultFile,
+  pruneLimit,
+  pruneMissingVaultFiles,
+  scanVault,
+  VAULT_INDEX_RACE_LOG,
+  VAULT_INDEX_SAFETY_LOG,
+  VaultPruneRefusedError,
+} from '../src/vault/indexer.js';
+import { parseVaultReindexArgs } from '../src/cli/vault-cli.js';
 import { CORPUS_PATH, TRIGGER_INDEX_PATH, loadTriggerIndex, rebuildTriggerIndex } from '../src/trigger-relevance.js';
 
 // The indexer's triggers wiring uses filterTriggers's DEFAULT corpus (no
@@ -388,5 +401,176 @@ Watch for \`rare-marker-cmd\` in history.`);
     assert.deepStrictEqual(result, { deleted: 1, preserved: 0 });
     assert.strictEqual(getDb().prepare('SELECT 1 FROM documents WHERE id = ?').get(doc.lastInsertRowid), undefined);
     assert.strictEqual(getDb().prepare('SELECT 1 FROM vault_files WHERE vault_path = ?').get(relPath), undefined);
+  });
+
+  it('uses the evidence-backed max(5, 2%) prune limit', () => {
+    assert.strictEqual(pruneLimit(0), 5);
+    assert.strictEqual(pruneLimit(250), 5);
+    assert.strictEqual(pruneLimit(251), 5);
+    assert.strictEqual(pruneLimit(299), 5);
+    assert.strictEqual(pruneLimit(300), 6);
+    assert.strictEqual(evaluatePruneSafety({
+      existingCount: 300, scannedCount: 294, missingCount: 6,
+    }).allowed, true);
+    assert.strictEqual(evaluatePruneSafety({
+      existingCount: 300, scannedCount: 293, missingCount: 7,
+    }).allowed, false);
+    assert.strictEqual(evaluatePruneSafety({
+      existingCount: 1, scannedCount: 0, missingCount: 1,
+    }).allowed, false, 'zero-file scans refuse even below the absolute prune limit');
+    assert.strictEqual(evaluatePruneSafety({
+      existingCount: 0, scannedCount: 0, missingCount: 0,
+    }).allowed, true, 'a fresh empty database may index an explicitly empty vault');
+  });
+
+  it('accepts only a positive safe integer for the exact prune confirmation', () => {
+    assert.deepStrictEqual(parseVaultReindexArgs([]), { confirmPrune: null });
+    assert.deepStrictEqual(parseVaultReindexArgs(['--confirm-prune=7']), { confirmPrune: 7 });
+    assert.throws(() => parseVaultReindexArgs(['--confirm-prune=0']), /positive exact count/);
+    assert.throws(() => parseVaultReindexArgs(['--confirm-prune=7.5']), /positive exact count/);
+    assert.throws(() => parseVaultReindexArgs(['--confirm-prune=7e0']), /positive exact count/);
+    assert.throws(() => parseVaultReindexArgs(['--confirm-prune=0x7']), /positive exact count/);
+    assert.throws(() => parseVaultReindexArgs(['--confirm-prune=7=ignored']), /positive exact count/);
+    assert.throws(
+      () => parseVaultReindexArgs(['--confirm-prune=7', '--confirm-prune=8']),
+      /only once/,
+    );
+    assert.throws(
+      () => parseVaultReindexArgs([`--confirm-prune=${Number.MAX_SAFE_INTEGER + 1}`]),
+      /positive exact count/,
+    );
+  });
+
+  it('reproduces empty-root mass prune and refuses before changing any document', async () => {
+    const emptyVault = mkdtempSync(join(tmpdir(), 'kb-empty-root-'));
+    const prefix = 'empty-root';
+    const database = getDb();
+    const insertDocument = database.prepare(
+      'INSERT INTO documents (title, content, source, doc_type) VALUES (?, ?, ?, ?)'
+    );
+    const insertVaultFile = database.prepare(
+      'INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type) VALUES (?, ?, ?, ?, ?)'
+    );
+    database.transaction(() => {
+      for (let index = 0; index < 12; index += 1) {
+        const path = `${prefix}/${index}.md`;
+        const doc = insertDocument.run(`Empty ${index}`, `original ${index}`, `vault:${path}`, 'note');
+        insertVaultFile.run(path, `hash-${index}`, doc.lastInsertRowid, `Empty ${index}`, 'note');
+      }
+    })();
+
+    try {
+      await assert.rejects(
+        indexVault(emptyVault),
+        error => error instanceof VaultPruneRefusedError
+          && error.code === 'KB_VAULT_PRUNE_REFUSED'
+          && error.safety.missingCount === 12
+          && error.safety.reason === 'zero_markdown_files',
+      );
+      assert.strictEqual(
+        database.prepare(`SELECT COUNT(*) AS count FROM documents WHERE source LIKE 'vault:empty-root/%'`).get().count,
+        12,
+      );
+      const warning = getHealth().warnings.find(item => item.includes('vault reindex refused'));
+      assert.match(warning, /12\/12 missing paths \(zero_markdown_files\)/);
+      const event = readFileSync(VAULT_INDEX_SAFETY_LOG, 'utf8').trim().split('\n').at(-1);
+      assert.doesNotMatch(event, new RegExp(emptyVault.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.doesNotMatch(event, /Empty 0/);
+    } finally {
+      database.prepare(`DELETE FROM vault_files WHERE vault_path LIKE 'empty-root/%'`).run();
+      database.prepare(`DELETE FROM documents WHERE source LIKE 'vault:empty-root/%'`).run();
+      rmSync(emptyVault, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves ordinary small prune and rename workflows without an override', async () => {
+    const normalVault = mkdtempSync(join(tmpdir(), 'kb-normal-prune-'));
+    const folder = join(normalVault, 'normal');
+    mkdirSync(folder);
+    for (let index = 0; index < 6; index += 1) {
+      writeFileSync(join(folder, `${index}.md`), `# Normal ${index}\n\nbody ${index}`);
+    }
+
+    try {
+      assert.strictEqual((await indexVault(normalVault)).indexed, 6);
+      for (let index = 1; index < 6; index += 1) unlinkSync(join(folder, `${index}.md`));
+      const pruned = await indexVault(normalVault);
+      assert.strictEqual(pruned.deleted, 5);
+      assert.strictEqual(
+        getDb().prepare("SELECT COUNT(*) AS count FROM vault_files WHERE vault_path LIKE 'normal/%'").get().count,
+        1,
+      );
+
+      renameSync(join(folder, '0.md'), join(folder, 'renamed.md'));
+      const renamed = await indexVault(normalVault);
+      assert.deepStrictEqual(
+        { indexed: renamed.indexed, deleted: renamed.deleted },
+        { indexed: 1, deleted: 1 },
+      );
+      assert.ok(getDb().prepare("SELECT 1 FROM vault_files WHERE vault_path = 'normal/renamed.md'").get());
+    } finally {
+      getDb().prepare(`DELETE FROM vault_files WHERE vault_path LIKE 'normal/%'`).run();
+      getDb().prepare(`DELETE FROM documents WHERE source LIKE 'vault:normal/%'`).run();
+      rmSync(normalVault, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks a non-empty over-limit scan before edits, then accepts only the exact audited count', async () => {
+    const guardedVault = mkdtempSync(join(tmpdir(), 'kb-guarded-prune-'));
+    const folder = join(guardedVault, 'mass');
+    mkdirSync(folder);
+    const database = getDb();
+    const insertDocument = database.prepare(
+      'INSERT INTO documents (title, content, source, doc_type, file_path) VALUES (?, ?, ?, ?, ?)'
+    );
+    const insertVaultFile = database.prepare(
+      'INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type) VALUES (?, ?, ?, ?, ?)'
+    );
+    database.transaction(() => {
+      for (let index = 0; index < 300; index += 1) {
+        const relPath = `mass/${index}.md`;
+        const fullPath = join(guardedVault, relPath);
+        writeFileSync(fullPath, `# Note ${index}\n\noriginal ${index}`);
+        const doc = insertDocument.run(`Note ${index}`, `original ${index}`, `vault:${relPath}`, 'note', fullPath);
+        insertVaultFile.run(relPath, `old-hash-${index}`, doc.lastInsertRowid, `Note ${index}`, 'note');
+      }
+    })();
+    writeFileSync(join(folder, '0.md'), '# Note 0\n\nedited before guarded scan');
+    for (let index = 293; index < 300; index += 1) unlinkSync(join(folder, `${index}.md`));
+
+    try {
+      const started = performance.now();
+      await assert.rejects(
+        indexVault(guardedVault),
+        error => error instanceof VaultPruneRefusedError
+          && error.safety.missingCount === 7
+          && error.safety.limit === 6,
+      );
+      assert.ok(performance.now() - started < 5000, '300-path refusal should remain a bounded scan');
+      assert.strictEqual(
+        database.prepare("SELECT content FROM documents WHERE source = 'vault:mass/0.md'").get().content,
+        'original 0',
+        'the changed file must not be applied before the prune guard',
+      );
+      await assert.rejects(indexVault(guardedVault, { confirmPrune: 8 }), VaultPruneRefusedError);
+
+      const result = await indexVault(guardedVault, { confirmPrune: 7 });
+      assert.strictEqual(result.deleted, 7);
+      assert.match(
+        database.prepare("SELECT content FROM documents WHERE source = 'vault:mass/0.md'").get().content,
+        /edited before guarded scan/,
+      );
+      assert.strictEqual(
+        getHealth().warnings.find(item => item.includes('vault reindex refused')),
+        undefined,
+      );
+      const events = readFileSync(VAULT_INDEX_SAFETY_LOG, 'utf8').trim().split('\n')
+        .slice(-3).map(line => JSON.parse(line).event);
+      assert.deepEqual(events, ['prune_refused', 'prune_refused', 'prune_override']);
+    } finally {
+      database.prepare(`DELETE FROM vault_files WHERE vault_path LIKE 'mass/%'`).run();
+      database.prepare(`DELETE FROM documents WHERE source LIKE 'vault:mass/%'`).run();
+      rmSync(guardedVault, { recursive: true, force: true });
+    }
   });
 });
