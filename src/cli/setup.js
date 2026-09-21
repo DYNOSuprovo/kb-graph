@@ -5,6 +5,7 @@ import { homedir, platform, release, type as osType } from 'os';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
+import Database from 'better-sqlite3';
 import { SUPPORTED_AGENTS, registerAgents } from './mcp-register.js';
 import { HOOK_FILES, PUSH_AGENTS, installAgentHooks } from './setup-hooks.js';
 import {
@@ -14,7 +15,9 @@ import { installBundledSkills } from './setup-skills.js';
 import { stableNodePath } from './runtime-node.js';
 import { writePrivateFile } from '../private-file.js';
 import { askHidden } from '../secret-prompt.js';
-import { KB_DIR } from '../paths.js';
+import { DEFAULT_KB_DIR } from '../env.js';
+import { DB_PATH, KB_DIR } from '../paths.js';
+import { scanVault } from '../vault/indexer.js';
 import {
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
@@ -55,6 +58,90 @@ function detectVaultPath() {
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+export class SetupVaultSafetyError extends Error {
+  constructor({ candidatePath, documentCount }) {
+    const candidate = candidatePath || 'none';
+    super(
+      `Refusing to repoint a populated knowledge base (${documentCount} documents) `
+      + `to an empty vault candidate (${candidate}). In automatic mode, supply `
+      + `--vault=${candidate} and --confirm-empty-vault=${candidate} together.`
+    );
+    this.name = 'SetupVaultSafetyError';
+    this.code = 'KB_SETUP_EMPTY_VAULT_REFUSED';
+  }
+}
+
+export function countStoredDocuments(dbPath = DB_PATH) {
+  if (!existsSync(dbPath)) return 0;
+  const database = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const hasDocuments = database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
+    ).get();
+    return hasDocuments
+      ? database.prepare('SELECT COUNT(*) AS count FROM documents').get().count
+      : 0;
+  } finally {
+    database.close();
+  }
+}
+
+function markdownCount(vaultPath) {
+  if (!vaultPath || !existsSync(vaultPath)) return 0;
+  return scanVault(vaultPath).length;
+}
+
+export function assertSafeVaultSelection({
+  candidatePath,
+  priorPath,
+  explicitVault,
+  confirmation,
+  documentCount = countStoredDocuments(),
+  candidateMarkdownCount = markdownCount(candidatePath),
+}) {
+  const sameAsPrior = candidatePath && priorPath
+    && resolve(candidatePath) === resolve(priorPath);
+  if (documentCount === 0 || candidateMarkdownCount > 0 || sameAsPrior) return;
+
+  const expected = candidatePath ? resolve(candidatePath) : 'none';
+  const confirmed = confirmation === 'none' ? 'none' : confirmation && resolve(confirmation);
+  if (!explicitVault || confirmed !== expected) {
+    throw new SetupVaultSafetyError({ candidatePath, documentCount });
+  }
+}
+
+export function setupJobPolicy(args, {
+  kbDir = KB_DIR,
+  defaultKbDir = DEFAULT_KB_DIR,
+} = {}) {
+  const loadRequested = args.includes('--load-jobs');
+  const noLoadRequested = args.includes('--no-load-jobs');
+  if (loadRequested && noLoadRequested) {
+    throw new Error('--load-jobs and --no-load-jobs cannot be used together');
+  }
+  const customKbDir = resolve(kbDir) !== resolve(defaultKbDir);
+  if (customKbDir) {
+    if (loadRequested) {
+      throw new Error('--load-jobs is refused for a custom KB_DIR; install its scheduler explicitly');
+    }
+    return { installJobs: noLoadRequested, loadJobs: false };
+  }
+  return { installJobs: true, loadJobs: !noLoadRequested };
+}
+
+export function assertSafeServiceSelection(deploy, {
+  kbDir = KB_DIR,
+  defaultKbDir = DEFAULT_KB_DIR,
+} = {}) {
+  const customKbDir = resolve(kbDir) !== resolve(defaultKbDir);
+  if (customKbDir && ['launchd', 'systemd'].includes(deploy)) {
+    throw new Error(
+      `${deploy} service installation is refused for a custom KB_DIR; `
+      + 'use manual mode and install the service explicitly'
+    );
+  }
 }
 
 // Parse KEY=value lines from a .env file; ignores comments and blanks.
@@ -361,6 +448,9 @@ export function parseAutoArgs(args) {
       else if (key === 'host') cfg.host = resolveHttpHost(val);
       else if (key === 'password') cfg.password = val;
       else if (key === 'vault') cfg.vaultPath = val === 'none' ? '' : resolve(val.replace(/^~/, HOME));
+      else if (key === 'confirm-empty-vault') {
+        cfg.confirmEmptyVault = val === 'none' ? 'none' : resolve(val.replace(/^~/, HOME));
+      }
       else if (key === 'agents') cfg.agents = val.split(',').map(s => s.trim().toLowerCase());
       else if (key === 'deploy') cfg.deploy = val;
       else if (key === 'brain') cfg.brainApi = val === 'true' || val === 'yes';
@@ -477,6 +567,25 @@ async function runInteractive(env) {
   outln('  Enter a path (created if missing), or "none" to skip.');
   const vaultAnswer = await ask(rl, 'Vault path', vaultDefault);
   cfg.vaultPath = vaultAnswer === 'none' ? '' : resolve(vaultAnswer.replace(/^~/, HOME));
+  try {
+    assertSafeVaultSelection({
+      candidatePath: cfg.vaultPath,
+      priorPath: prior.OBSIDIAN_VAULT_PATH,
+      explicitVault: false,
+      confirmation: null,
+    });
+  } catch (error) {
+    if (!(error instanceof SetupVaultSafetyError)) throw error;
+    const expected = cfg.vaultPath || 'none';
+    outln(`  ${error.message}`);
+    const confirmation = await ask(rl, `Type "${expected}" to confirm this empty vault`, '');
+    assertSafeVaultSelection({
+      candidatePath: cfg.vaultPath,
+      priorPath: prior.OBSIDIAN_VAULT_PATH,
+      explicitVault: true,
+      confirmation,
+    });
+  }
 
   // 6. AI agents
   outln();
@@ -652,12 +761,19 @@ function applyConfig(cfg) {
   // 5. Scheduled jobs: nightly harvest, reindex, weekly synthesis
   let claudePath = null;
   try { claudePath = execFileSync('which', ['claude']).toString().trim(); } catch { /* optional */ }
-  const jobs = installJobs({
-    home: HOME, nodeBin: stableNodePath(), kbRoot: PROJECT_ROOT,
-    vaultPath: cfg.vaultPath, claudePath, load: cfg.loadJobs !== false, kbDir: KB_DIR,
-  });
-  results.steps.push(...jobs.steps);
-  if (!claudePath) results.steps.push({ action: 'claude CLI not found — nightly harvest needs it; install Claude Code and re-run setup', error: 'CLAUDE_PATH unset' });
+  if (cfg.installJobs !== false) {
+    const jobs = installJobs({
+      home: HOME, nodeBin: stableNodePath(), kbRoot: PROJECT_ROOT,
+      vaultPath: cfg.vaultPath, claudePath, load: cfg.loadJobs !== false, kbDir: KB_DIR,
+    });
+    results.steps.push(...jobs.steps);
+    if (!claudePath) results.steps.push({ action: 'claude CLI not found — nightly harvest needs it; install Claude Code and re-run setup', error: 'CLAUDE_PATH unset' });
+  } else {
+    results.steps.push({
+      action: 'Skipped scheduled jobs for custom KB_DIR',
+      hint: 'Re-run with --load-jobs or --no-load-jobs to choose explicitly.',
+    });
+  }
 
   // 6. Bundled skills — never overwrite a skill the user already has.
   try {
@@ -756,6 +872,7 @@ export async function setup(args = []) {
       prior.KB_PORT,
       error => outln(`Warning: ${error.message}; resetting to ${DEFAULT_HTTP_PORT}.`),
     );
+    const jobPolicy = setupJobPolicy(args);
     const cfg = {
       port: merged.port ?? priorPort,
       host: merged.host || priorHost,
@@ -770,8 +887,16 @@ export async function setup(args = []) {
       brainDomain: merged.brainDomain || 'brain.yourdomain.com',
       authSecret: merged.authSecret || prior.BETTER_AUTH_SECRET || genBase64(),
       apiKeys: apiKeysFromEnv(prior),
-      loadJobs: !args.includes('--no-load-jobs'),
+      ...jobPolicy,
     };
+
+    assertSafeVaultSelection({
+      candidatePath: cfg.vaultPath,
+      priorPath: prior.OBSIDIAN_VAULT_PATH,
+      explicitVault: args.some(arg => arg.startsWith('--vault=')),
+      confirmation: cliConfig.confirmEmptyVault,
+    });
+    assertSafeServiceSelection(cfg.deploy);
 
     // Generate API keys for each agent, reusing prior keys so registered agents keep working.
     for (const agent of cfg.agents) {
@@ -788,6 +913,8 @@ export async function setup(args = []) {
 
   // Interactive mode
   const cfg = await runInteractive(env);
+  Object.assign(cfg, setupJobPolicy(args));
+  assertSafeServiceSelection(cfg.deploy);
   const results = applyConfig(cfg);
   printSummary(results);
 }

@@ -266,8 +266,8 @@ const COMMANDS = {
   },
   setup: {
     summary: 'Interactive setup wizard (--auto for agent mode)',
-    boolean: ['--auto', '--no-load-jobs'],
-    valueEq: ['--port', '--host', '--password', '--vault', '--agents', '--deploy', '--brain', '--domain'],
+    boolean: ['--auto', '--no-load-jobs', '--load-jobs'],
+    valueEq: ['--port', '--host', '--password', '--vault', '--confirm-empty-vault', '--agents', '--deploy', '--brain', '--domain'],
     run: a => import('../src/cli/setup.js').then(m => m.setup(a)),
   },
   'safety-check': {
@@ -282,12 +282,13 @@ const COMMANDS = {
     }),
   },
   vault: {
-    summary: 'Reindex Obsidian vault (embeddings on; --no-embeddings to skip)',
+    summary: 'Reindex Obsidian vault (embeddings on; large prune requires an exact --confirm-prune count)',
     args: 'reindex',
     boolean: ['--no-embeddings'],
+    valueEq: ['--confirm-prune'],
     run: a => {
       if (a[0] !== 'reindex') { console.error(usageFor('vault')); process.exit(2); }
-      return import('../src/cli/vault-cli.js').then(m => m.vaultReindex());
+      return import('../src/cli/vault-cli.js').then(m => m.vaultReindex(a.slice(1)));
     },
   },
 };

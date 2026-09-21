@@ -1572,6 +1572,7 @@ export function getHealth({ recordBacklog = false } = {}) {
   const hookErrors = lineCount(HOOK_ERROR_LOG);
   const reconcile = getMeta('last_reconcile');
   const reconcileError = getMeta('last_reconcile_error');
+  const reindexRefusal = getMeta('last_reindex_refusal');
 
   const warnings = [];
   // Both remedies are long-running and neither is free, so each says what it
@@ -1606,6 +1607,17 @@ export function getHealth({ recordBacklog = false } = {}) {
   const reconcileAge = ageHours(reconcile);
   if (reconcileAge === null || reconcileAge > STALE_AFTER.reconcile) warnings.push(`reconcile heartbeat ${reconcileAge === null ? 'never recorded' : Math.round(reconcileAge) + 'h old'} — check com.kb.reconcile launchd job`);
   if (reconcileError?.value) warnings.push(`reconcile last failed: ${reconcileError.value}`);
+  if (reindexRefusal?.value) {
+    try {
+      const refusal = JSON.parse(reindexRefusal.value);
+      warnings.push(
+        `vault reindex refused ${refusal.missing_count}/${refusal.existing_count} missing paths `
+        + `(${refusal.reason}) — review vault-index-safety.jsonl`
+      );
+    } catch {
+      warnings.push('vault reindex was refused — review vault-index-safety.jsonl');
+    }
+  }
 
   return {
     embeddings: `${embedded}/${docs}`,
