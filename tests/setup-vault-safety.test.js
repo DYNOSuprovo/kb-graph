@@ -183,7 +183,10 @@ test('automatic setup fails closed before creating the default empty vault or jo
     assert.equal(allowed.status, 0, allowed.stderr);
     assert.match(readFileSync(join(kbDir, '.env'), 'utf8'), new RegExp(`OBSIDIAN_VAULT_PATH=${candidate}`));
     assert.equal(existsSync(launchctlMarker), false, '--no-load-jobs must never invoke launchctl');
-    assert.ok(existsSync(join(home, 'Library', 'LaunchAgents', 'com.kb.reindex.plist')));
+    const reindexJob = process.platform === 'darwin'
+      ? join(home, 'Library', 'LaunchAgents', 'com.kb.reindex.plist')
+      : join(home, '.config', 'systemd', 'user', 'kb-reindex.service');
+    assert.ok(existsSync(reindexJob));
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }
