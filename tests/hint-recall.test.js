@@ -226,6 +226,7 @@ const PROSE_PREVALENCE = [25, 45, 70, 100, 140, 175];
 // Mentions land in filler bodies, never in a filler's title or tags, so they move
 // df without creating a note that could be recalled instead of the real one.
 const PREVALENCE = [2, 4, 7, 12, 18, 26, 38, 55, 75, 100, 130, 170, 215, 270, 330, 400];
+const EXPANDED_SUBJECTS = new Set(['acoustics']);
 
 before(() => {
   const insert = getDb().prepare('INSERT INTO documents (title, content, doc_type, tags) VALUES (?, ?, ?, ?)');
@@ -280,21 +281,42 @@ describe('hint recall', () => {
   });
 
   // The authored half: the subject named in passing, amid words that are not
-  // about it. Measured 38% — 6 of 16 — which is the finding and not the
+  // about it. The pinned public/main baseline was 38% — 6 of 16 — which is the
   // baseline: the same shape of prompt ("why is the harvest job not writing
   // anything") declines on the live store against six notes whose titles carry
   // the word.
   //
-  // The floor comes from a mutation rather than from taste. Raising the scorer's
-  // mass bar by 47% drops this to 25% while every "fires" case in
-  // hint-relevance.test.js still passes, so the floor is set to fail there. It
-  // leaves one probe of headroom, deliberately: the fixture is deterministic, so
-  // a change that costs a probe is a real change and wants looking at.
+  // The public/main baseline is 6/16 (37.5%). The 40% floor requires a measured
+  // improvement without pinning CI exactly to the observed result: the current
+  // scorer recalls 7/16 (43.75%). This is not a claim of one-probe robustness;
+  // the individual regression below names the behavior the change actually owns.
   it('surfaces a note from a prompt that raises the subject without quoting it', (t) => {
     const probes = SUBJECTS.map(subject => ({ prompt: subject.ask, subject, label: subject.tags }));
     const result = recall(probes);
     t.diagnostic(report(result));
-    assert.ok(result.rate >= 0.30, report(result));
+    assert.ok(result.rate >= 0.40, report(result));
+  });
+
+  it('keeps each newly expanded natural phrasing regression', () => {
+    for (const subject of SUBJECTS.filter(({ tags }) => EXPANDED_SUBJECTS.has(tags))) {
+      const titles = new Set(subject.notes.map(([title]) => title));
+      const hits = relevantNotes(subject.ask);
+      assert.ok(
+        hits.some(hit => titles.has(hit.title)),
+        `${subject.tags}: ${hits.map(hit => hit.title).join(' | ') || 'DECLINE'}`,
+      );
+    }
+  });
+
+  it('does not expand quoted or test-instruction versions of recovered prompts', () => {
+    for (const subject of SUBJECTS.filter(({ tags }) => EXPANDED_SUBJECTS.has(tags))) {
+      for (const prompt of [
+        `The handoff says "${subject.ask}", but only audit the handoff.`,
+        `Regression test prompt: ${subject.ask}. Assert that the hint fires.`,
+      ]) {
+        assert.deepStrictEqual(relevantNotes(prompt), [], `${subject.tags}: ${prompt}`);
+      }
+    }
   });
 
   // Without these the floors above are satisfiable by returning every note for
