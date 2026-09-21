@@ -72,7 +72,7 @@ describe('bootstrapping a fresh database', () => {
     const kb = new Database(':memory:');
     assert.deepStrictEqual(
       applyMigrations(kb, KB_MIGRATIONS).map(m => m.version),
-      [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 20, 24, 25, 26, 27, 28, 30],
+      [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 20, 24, 25, 26, 27, 28, 30, 31],
       'the base tables already carry the vault_files summary columns, so 2 is skipped; '
       + '10 only deletes rows a fresh database does not have',
     );
@@ -361,7 +361,7 @@ describe('migrating forward from an older schema', () => {
 
     assert.deepStrictEqual(
       applyMigrations(db, KB_MIGRATIONS).map(migration => migration.version),
-      [29, 30],
+      [29, 30, 31],
     );
 
     assert.deepStrictEqual(
@@ -400,12 +400,14 @@ describe('migrating forward from an older schema', () => {
       'SELECT id, tier, created_at, superseded_at, superseded_by FROM documents WHERE id = ?'
     ).get(docId);
 
-    assert.deepStrictEqual(applyMigrations(db, KB_MIGRATIONS).map(m => m.version), [30]);
+    assert.deepStrictEqual(applyMigrations(db, KB_MIGRATIONS).map(m => m.version), [30, 31]);
     assert.ok(hasColumn(db, 'documents', 'detached_at'));
     assert.ok(hasColumn(db, 'vault_files', 'missing_at'));
     assert.ok(hasColumn(db, 'vault_files', 'detached_content_hash'));
     assert.ok(hasTable(db, 'document_tombstones'));
     assert.ok(hasIndex(db, 'idx_documents_attached_current'));
+    assert.ok(hasTable(db, 'identity_repair_runs'));
+    assert.ok(hasTable(db, 'identity_repair_ledger'));
     assert.deepStrictEqual(
       db.prepare(
         'SELECT id, tier, created_at, superseded_at, superseded_by FROM documents WHERE id = ?'
@@ -434,6 +436,21 @@ describe('migrating forward from an older schema', () => {
     assert.ok(db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'documents_au'"
     ).get());
+  });
+
+  it('rolls back the identity repair ledger when migration 31 is interrupted', () => {
+    const db = current(KB_MIGRATIONS.filter(migration => migration.version < 31));
+    db.exec('CREATE TABLE identity_repair_ledger (synthetic_collision INTEGER)');
+
+    assert.throws(
+      () => applyMigrations(
+        db,
+        KB_MIGRATIONS.filter(migration => migration.version === 31),
+      ),
+      /no such column: run_id/,
+    );
+    assert.strictEqual(hasTable(db, 'identity_repair_runs'), false);
+    assert.strictEqual(hasIndex(db, 'idx_identity_repair_ledger_pending_undo'), false);
   });
 
   it('removes detached rows from FTS and blocks old-client hard deletion', () => {
