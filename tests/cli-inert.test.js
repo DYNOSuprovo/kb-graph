@@ -18,7 +18,7 @@ const KB_COMMANDS = [
   'start', 'stop', 'mcp', 'mcp-shim', 'tool', 'migrate', 'register', 'ingest', 'search', 'status', 'tags', 'tier',
   'retrieval-report', 'hint-probe', 'fact-conflicts', 'fact-adjudicate', 'wakeup-hook', 'prompt-hint', 'trigger-hook', 'session-capture-hook', 'link-backfill', 'aliases-backfill', 'trigger-corpus', 'triggers-backfill',
   'fold-inverses', 'canonicalize-entities', 'harvest', 'consolidate-state', 'entity-merge',
-  'capture-x', 'classify', 'summarize', 'setup', 'safety-check', 'vault', 'meters',
+  'capture-x', 'classify', 'summarize', 'setup', 'safety-check', 'repair', 'vault', 'meters',
 ];
 
 const STANDALONE_BINS = [

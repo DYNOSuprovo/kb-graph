@@ -281,6 +281,13 @@ const COMMANDS = {
       if (!result.safe) process.exit(1);
     }),
   },
+  repair: {
+    summary: 'Plan, apply, or undo a deterministic document identity repair from an immutable backup',
+    args: 'identity',
+    boolean: ['--apply'],
+    valueEq: ['--backup', '--report', '--confirm', '--undo', '--batch-size'],
+    run: a => import('../src/cli/repair-cli.js').then(m => m.runRepairCli(a)),
+  },
   vault: {
     summary: 'Reindex the vault or explicitly purge detached rows after a grace period',
     args: '<reindex | purge-detached>',

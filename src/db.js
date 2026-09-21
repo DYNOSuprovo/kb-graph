@@ -30,6 +30,12 @@ export const TOMBSTONE_REASON = Object.freeze({
 });
 export const DETACHED_PURGE_BATCH_SIZE = 100;
 export const KB_WRITER_SCHEMA_VERSION = 30;
+export const IDENTITY_REPAIR_STATUS = Object.freeze({
+  APPLYING: 'applying',
+  APPLIED: 'applied',
+  UNDOING: 'undoing',
+  UNDONE: 'undone',
+});
 const DETACHMENT_SCHEMA_MARKER = 'document-detachment-v1';
 const DETACHED_CONTENT_HASH_SENTINEL = 'detached';
 
@@ -1075,6 +1081,49 @@ export const MIGRATIONS = [{
         updated_at = CURRENT_TIMESTAMP;
     `);
   },
+}, {
+  version: 31,
+  name: 'resumable identity repair ledger',
+  applied: db => hasTable(db, 'identity_repair_runs')
+    && hasTable(db, 'identity_repair_ledger')
+    && hasIndex(db, 'idx_identity_repair_ledger_pending_undo'),
+  up: db => db.exec(`
+    CREATE TABLE IF NOT EXISTS identity_repair_runs (
+      run_id TEXT PRIMARY KEY,
+      plan_hash TEXT NOT NULL UNIQUE,
+      backup_sha256 TEXT NOT NULL,
+      live_schema_version INTEGER NOT NULL,
+      backup_schema_version INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (
+        status IN (
+          '${IDENTITY_REPAIR_STATUS.APPLYING}',
+          '${IDENTITY_REPAIR_STATUS.APPLIED}',
+          '${IDENTITY_REPAIR_STATUS.UNDOING}',
+          '${IDENTITY_REPAIR_STATUS.UNDONE}'
+        )
+      ),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_repair_ledger (
+      run_id TEXT NOT NULL REFERENCES identity_repair_runs(run_id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      target_table TEXT NOT NULL,
+      target_column TEXT NOT NULL,
+      row_id INTEGER NOT NULL,
+      before_json TEXT NOT NULL,
+      after_json TEXT NOT NULL,
+      match_method TEXT NOT NULL,
+      applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      undone_at DATETIME,
+      PRIMARY KEY (run_id, sequence),
+      UNIQUE (run_id, target_table, target_column, row_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_identity_repair_ledger_pending_undo
+      ON identity_repair_ledger(run_id, sequence DESC)
+      WHERE undone_at IS NULL;
+  `),
 }];
 
 // SQL's restatement of isTestSession() (src/retrieval.js) -- SQLite has no
