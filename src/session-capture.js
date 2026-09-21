@@ -10,6 +10,7 @@ import {
 } from 'fs';
 import { basename, dirname, join } from 'path';
 import { KB_DIR, LOGS_DIR } from './paths.js';
+import { validateHookHost } from './hook-host.js';
 import { PRIVATE_FILE_MODE } from './private-file.js';
 import {
   defaultTranscriptRoots,
@@ -144,7 +145,12 @@ export function captureRequest(hookInput = {}, { agent = 'unknown', reason = 'ac
 // deadline, the hook writes the same key again in fallback mode; that is one
 // queue item, not two captures.
 export function enqueueSessionCapture(payload, { now = Date.now() } = {}) {
-  const request = captureRequest(payload?.hookInput || payload, {
+  const hookInput = payload?.hookInput || payload;
+  const host = validateHookHost(hookInput, payload?.agent);
+  if (!host.ok) {
+    return { output: null, plan: null, queued: false, reason: host.reason };
+  }
+  const request = captureRequest(hookInput, {
     agent: payload?.agent,
     reason: payload?.reason,
     now,

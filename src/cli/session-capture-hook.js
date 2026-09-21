@@ -9,7 +9,7 @@ import {
 } from './hook-io.js';
 
 const REASONS = ['activity', 'precompact', 'session_end'];
-const USAGE = 'Usage: kb session-capture-hook [--agent <claude|codex>] [--reason=<activity|precompact|session_end>]';
+const USAGE = 'Usage: kb session-capture-hook [--agent <claude|codex|cursor>] [--reason=<activity|precompact|session_end>]';
 
 async function readStdin() {
   let data = '';
