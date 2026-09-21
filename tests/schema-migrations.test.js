@@ -5,7 +5,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { MIGRATIONS as KB_MIGRATIONS } from '../src/db.js';
+import {
+  configureKnowledgeBaseConnection,
+  MIGRATIONS as KB_MIGRATIONS,
+} from '../src/db.js';
 import {
   applyMigrations,
   ensureSchemaReady,
@@ -19,6 +22,7 @@ import {
 
 function current(migrations) {
   const db = new Database(':memory:');
+  configureKnowledgeBaseConnection(db);
   applyMigrations(db, migrations);
   return db;
 }
@@ -68,7 +72,7 @@ describe('bootstrapping a fresh database', () => {
     const kb = new Database(':memory:');
     assert.deepStrictEqual(
       applyMigrations(kb, KB_MIGRATIONS).map(m => m.version),
-      [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 20, 24, 25, 26, 27, 28],
+      [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 20, 24, 25, 26, 27, 28, 30],
       'the base tables already carry the vault_files summary columns, so 2 is skipped; '
       + '10 only deletes rows a fresh database does not have',
     );
@@ -357,7 +361,7 @@ describe('migrating forward from an older schema', () => {
 
     assert.deepStrictEqual(
       applyMigrations(db, KB_MIGRATIONS).map(migration => migration.version),
-      [29],
+      [29, 30],
     );
 
     assert.deepStrictEqual(
@@ -370,6 +374,188 @@ describe('migrating forward from an older schema', () => {
     );
     assert.ok(hasIndex(db, 'idx_write_decisions_session_created'));
     assert.ok(hasIndex(db, 'idx_tool_calls_session_created'));
+  });
+
+  it('adds reversible detachment without rewriting document identity or attribution', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    applyMigrations(db, KB_MIGRATIONS.filter(migration => migration.version <= 29));
+    const docId = Number(db.prepare(`
+      INSERT INTO documents (title, content, source, doc_type, tier)
+      VALUES ('Stable identity', 'historical attribution stays linked', 'vault:state/stable.md', 'state', 'verified')
+    `).run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type)
+      VALUES ('state/stable.md', '0123456789abcdef', ?, 'Stable identity', 'state')
+    `).run(docId);
+    db.prepare(`
+      INSERT INTO retrievals (doc_id, surface, session)
+      VALUES (?, 'kb_read', 'migration-proof')
+    `).run(docId);
+    db.prepare(`
+      INSERT INTO write_decisions (threshold, refused, doc_id)
+      VALUES (0.85, 0, ?)
+    `).run(docId);
+    const before = db.prepare(
+      'SELECT id, tier, created_at, superseded_at, superseded_by FROM documents WHERE id = ?'
+    ).get(docId);
+
+    assert.deepStrictEqual(applyMigrations(db, KB_MIGRATIONS).map(m => m.version), [30]);
+    assert.ok(hasColumn(db, 'documents', 'detached_at'));
+    assert.ok(hasColumn(db, 'vault_files', 'missing_at'));
+    assert.ok(hasColumn(db, 'vault_files', 'detached_content_hash'));
+    assert.ok(hasTable(db, 'document_tombstones'));
+    assert.ok(hasIndex(db, 'idx_documents_attached_current'));
+    assert.deepStrictEqual(
+      db.prepare(
+        'SELECT id, tier, created_at, superseded_at, superseded_by FROM documents WHERE id = ?'
+      ).get(docId),
+      before,
+    );
+    assert.strictEqual(db.prepare('SELECT doc_id FROM retrievals').get().doc_id, docId);
+    assert.strictEqual(db.prepare('SELECT doc_id FROM write_decisions').get().doc_id, docId);
+  });
+
+  it('rolls back every detachment schema change when migration 30 is interrupted', () => {
+    const db = current(KB_MIGRATIONS.filter(migration => migration.version < 30));
+    db.exec('CREATE TABLE idx_documents_attached_current (synthetic_collision INTEGER)');
+
+    assert.throws(
+      () => applyMigrations(
+        db,
+        KB_MIGRATIONS.filter(migration => migration.version === 30),
+      ),
+      /already a table/,
+    );
+    assert.strictEqual(hasColumn(db, 'documents', 'detached_at'), false);
+    assert.strictEqual(hasColumn(db, 'vault_files', 'missing_at'), false);
+    assert.strictEqual(hasColumn(db, 'vault_files', 'detached_content_hash'), false);
+    assert.strictEqual(hasTable(db, 'document_tombstones'), false);
+    assert.ok(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'documents_au'"
+    ).get());
+  });
+
+  it('removes detached rows from FTS and blocks old-client hard deletion', () => {
+    const db = current(KB_MIGRATIONS);
+    db.pragma('foreign_keys = ON');
+    const docId = Number(db.prepare(`
+      INSERT INTO documents (title, content, source, doc_type)
+      VALUES ('Detach sentinel', 'phrase only the attached index should find', 'vault:state/detach.md', 'state')
+    `).run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type)
+      VALUES ('state/detach.md', 'abcdef0123456789', ?, 'Detach sentinel', 'state')
+    `).run(docId);
+    assert.strictEqual(
+      db.prepare("SELECT COUNT(*) AS count FROM documents_fts WHERE documents_fts MATCH 'sentinel'").get().count,
+      1,
+    );
+
+    db.prepare(`
+      UPDATE documents
+      SET detached_at = CURRENT_TIMESTAMP, detached_reason = 'vault_missing'
+      WHERE id = ?
+    `).run(docId);
+    assert.strictEqual(
+      db.prepare("SELECT COUNT(*) AS count FROM documents_fts WHERE documents_fts MATCH 'sentinel'").get().count,
+      0,
+    );
+    db.prepare('UPDATE documents SET detached_at = NULL, detached_reason = NULL WHERE id = ?').run(docId);
+    assert.strictEqual(
+      db.prepare("SELECT COUNT(*) AS count FROM documents_fts WHERE documents_fts MATCH 'sentinel'").get().count,
+      1,
+    );
+    db.prepare(`
+      INSERT INTO document_tombstones (
+        document_id, vault_path, content_hash, detached_at, reason
+      ) VALUES (?, 'state/detach.md', 'abcdef0123456789', '2000-01-01T00:00:00.000Z', 'detached_grace_expired')
+    `).run(docId);
+    assert.throws(
+      () => db.prepare('DELETE FROM documents WHERE id = ?').run(docId),
+      /audited tombstone/,
+    );
+    db.prepare('DELETE FROM vault_files WHERE document_id = ?').run(docId);
+    assert.throws(
+      () => db.prepare('DELETE FROM documents WHERE id = ?').run(docId),
+      /audited tombstone/,
+      'removing the mutable vault row first must not bypass the tombstone gate',
+    );
+    assert.ok(db.prepare('SELECT 1 FROM documents WHERE id = ?').get(docId));
+  });
+
+  it('fails old vault writers closed after migration 30', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kb-old-writer-'));
+    const file = join(root, 'kb.db');
+    const currentClient = new Database(file);
+    configureKnowledgeBaseConnection(currentClient);
+    applyMigrations(currentClient, KB_MIGRATIONS);
+    const docId = Number(currentClient.prepare(`
+      INSERT INTO documents (title, content, source, doc_type)
+      VALUES ('Old writer sentinel', 'body', 'vault:state/old.md', 'state')
+    `).run().lastInsertRowid);
+    currentClient.prepare(`
+      INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type)
+      VALUES ('state/old.md', ?, ?, 'Old writer sentinel', 'state')
+    `).run('a'.repeat(64), docId);
+    currentClient.prepare(`
+      INSERT INTO embeddings (
+        document_id, chunk_index, chunk_text, embedding, dimensions
+      ) VALUES (?, 0, 'body', X'00000000', 1)
+    `).run(docId);
+    currentClient.prepare(`
+      UPDATE documents
+      SET detached_at = CURRENT_TIMESTAMP, detached_reason = 'vault_missing'
+      WHERE id = ?
+    `).run(docId);
+    currentClient.prepare(`
+      UPDATE vault_files
+      SET detached_content_hash = content_hash,
+          content_hash = 'detached',
+          missing_at = CURRENT_TIMESTAMP
+      WHERE document_id = ?
+    `).run(docId);
+    currentClient.close();
+
+    const oldClient = new Database(file);
+    try {
+      assert.strictEqual(
+        oldClient.prepare('SELECT content_hash FROM vault_files WHERE document_id = ?').get(docId).content_hash,
+        'detached',
+        'an old indexer cannot silently take its unchanged-hash skip path',
+      );
+      assert.throws(
+        () => oldClient.prepare('DELETE FROM embeddings WHERE document_id = ?').run(docId),
+        /no such function: kb_writer_schema_version/,
+      );
+      assert.strictEqual(
+        oldClient.prepare('SELECT COUNT(*) AS count FROM embeddings WHERE document_id = ?').get(docId).count,
+        1,
+      );
+      assert.throws(
+        () => oldClient.prepare(
+          "UPDATE documents SET content = 'old client partial write' WHERE id = ?"
+        ).run(docId),
+        /no such function: kb_writer_schema_version/,
+      );
+      assert.throws(
+        () => oldClient.prepare(
+          "UPDATE vault_files SET content_hash = '0123456789abcdef' WHERE document_id = ?"
+        ).run(docId),
+        /no such function: kb_writer_schema_version/,
+      );
+      assert.throws(
+        () => oldClient.prepare('DELETE FROM vault_files WHERE document_id = ?').run(docId),
+        /no such function: kb_writer_schema_version/,
+      );
+      assert.strictEqual(
+        oldClient.prepare('SELECT content FROM documents WHERE id = ?').get(docId).content,
+        'body',
+      );
+    } finally {
+      oldClient.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
 });

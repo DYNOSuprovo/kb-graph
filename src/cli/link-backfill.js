@@ -21,6 +21,7 @@ export async function linkBackfill() {
   const rows = getDb().prepare(`
     SELECT e.document_id, e.vault_path, e.embedding, d.title
     FROM embeddings e JOIN documents d ON d.id = e.document_id
+    WHERE d.detached_at IS NULL
   `).all();
   const docs = rows.map(r => ({
     document_id: r.document_id,

@@ -1,3 +1,4 @@
+import './helpers/tmp-kb.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import { spawnSync } from 'node:child_process';
@@ -7,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { assertKnownFlags, UsageError, wantsHelp } from '../src/cli/flags.js';
+import { configureKnowledgeBaseConnection } from '../src/db.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -165,6 +167,7 @@ describe('a command run against a database that is behind', () => {
     home = mkdtempSync(join(tmpdir(), 'kb-cli-behind-'));
     run([join(ROOT, 'bin', 'kb.js'), 'migrate']);
     const db = new Database(join(home, 'kb', 'kb.db'));
+    configureKnowledgeBaseConnection(db);
     db.prepare("INSERT INTO documents (title, content, doc_type) VALUES ('keep', 'me', 'note')").run();
     db.exec('ALTER TABLE documents DROP COLUMN superseded_at');
     db.close();

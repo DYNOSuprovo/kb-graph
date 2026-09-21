@@ -72,11 +72,15 @@ function inferredLiveDocs(db, ids) {
   if (ids.length === 0) return new Map();
   const placeholders = ids.map(() => '?').join(', ');
   const rows = db.prepare(
-    `SELECT id, title, tier, superseded_at FROM documents WHERE id IN (${placeholders})`
+    `SELECT id, title, tier, detached_at, superseded_at FROM documents WHERE id IN (${placeholders})`
   ).all(...ids);
   const byId = new Map();
   for (const row of rows) {
-    if (row.tier === TIER.INFERRED && row.superseded_at == null) byId.set(row.id, row);
+    if (
+      row.tier === TIER.INFERRED
+      && row.detached_at == null
+      && row.superseded_at == null
+    ) byId.set(row.id, row);
   }
   return byId;
 }

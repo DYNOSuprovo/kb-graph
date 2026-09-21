@@ -244,6 +244,9 @@ function defineTools() {
           // was retired. Superseded notes stay readable — this is also the
           // "how we got here" path.
           let text = `${tierBanner(doc)}\n\n${JSON.stringify(doc, null, 2)}`;
+          if (doc.detached_at) {
+            text = `⚠ DETACHED ${doc.detached_at} (${doc.detached_reason || 'source missing'}) — excluded from current recall\n${text}`;
+          }
           if (doc.superseded_at) {
             const by = doc.superseded_by ? ` by #${doc.superseded_by}` : '';
             const reason = doc.superseded_reason ? `, ${doc.superseded_reason}` : '';
@@ -422,10 +425,10 @@ function defineTools() {
           const stats = getStats();
           const db = getDb();
           const byType = db.prepare(
-            'SELECT note_type, COUNT(*) as count FROM vault_files GROUP BY note_type ORDER BY count DESC'
+            'SELECT note_type, COUNT(*) as count FROM vault_files WHERE missing_at IS NULL GROUP BY note_type ORDER BY count DESC'
           ).all();
           const byProject = db.prepare(
-            'SELECT project, COUNT(*) as count FROM vault_files WHERE project IS NOT NULL GROUP BY project ORDER BY count DESC'
+            'SELECT project, COUNT(*) as count FROM vault_files WHERE missing_at IS NULL AND project IS NOT NULL GROUP BY project ORDER BY count DESC'
           ).all();
           return { content: [{ type: 'text', text: JSON.stringify({ ...stats, byType, byProject }, null, 2) }] };
         } catch (err) {
@@ -710,7 +713,7 @@ function defineTools() {
           const stats = getStats();
 
           const byType = db.prepare(
-            'SELECT note_type, COUNT(*) as count FROM vault_files WHERE note_type IS NOT NULL GROUP BY note_type ORDER BY count DESC'
+            'SELECT note_type, COUNT(*) as count FROM vault_files WHERE missing_at IS NULL AND note_type IS NOT NULL GROUP BY note_type ORDER BY count DESC'
           ).all();
 
           const byDomain = tagCounts(10);
@@ -718,7 +721,7 @@ function defineTools() {
           // Parity with the wakeup-hook briefing: superseded notes drop out of
           // "recent". LEFT JOIN keeps vault files with no linked document.
           const recent = db.prepare(
-            'SELECT vf.title, vf.note_type, vf.tags, vf.project, d.tier FROM vault_files vf LEFT JOIN documents d ON d.id = vf.document_id WHERE d.superseded_at IS NULL ORDER BY vf.indexed_at DESC LIMIT 10'
+            'SELECT vf.title, vf.note_type, vf.tags, vf.project, d.tier FROM vault_files vf LEFT JOIN documents d ON d.id = vf.document_id WHERE vf.missing_at IS NULL AND d.detached_at IS NULL AND d.superseded_at IS NULL ORDER BY vf.indexed_at DESC LIMIT 10'
           ).all();
 
           const byTier = liveTierCounts();

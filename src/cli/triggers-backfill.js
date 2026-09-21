@@ -49,7 +49,10 @@ export function revetTriggers() {
   const rows = db.prepare(`
     SELECT vf.vault_path, vf.document_id, d.title, d.content, d.triggers
     FROM vault_files vf JOIN documents d ON d.id = vf.document_id
-    WHERE d.superseded_at IS NULL AND d.doc_type != 'archive'
+    WHERE vf.missing_at IS NULL
+      AND d.detached_at IS NULL
+      AND d.superseded_at IS NULL
+      AND d.doc_type != 'archive'
     ORDER BY vf.document_id
   `).all();
   const update = db.prepare('UPDATE documents SET triggers = ? WHERE id = ?');
@@ -100,7 +103,10 @@ export async function runTriggersBackfillCli(args = []) {
   const rows = getDb().prepare(`
     SELECT vf.vault_path, vf.document_id, d.title
     FROM vault_files vf JOIN documents d ON d.id = vf.document_id
-    WHERE d.superseded_at IS NULL AND d.doc_type != 'archive'
+    WHERE vf.missing_at IS NULL
+      AND d.detached_at IS NULL
+      AND d.superseded_at IS NULL
+      AND d.doc_type != 'archive'
       ${doc === undefined ? '' : 'AND d.id = ?'}
     ORDER BY vf.document_id
   `).all(...(doc === undefined ? [] : [doc]));

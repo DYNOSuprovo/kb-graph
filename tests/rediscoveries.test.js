@@ -51,7 +51,12 @@ const rediscoveryRows = () => getDb().prepare(
 ).all(SURFACE.REDISCOVERY);
 
 describe('kb_check_duplicate logs a rediscovery', () => {
-  beforeEach(() => getDb().exec('DELETE FROM embeddings; DELETE FROM documents'));
+  beforeEach(() => getDb().exec(`
+    DELETE FROM embeddings;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `));
 
   it('one row per match, sharing an event id, query truncated to 300 chars and the ambient session', async () => {
     const content = `Retries are capped at three attempts, with jitter between them. ${'x'.repeat(400)}`;
@@ -97,7 +102,12 @@ describe('kb_check_duplicate logs a rediscovery', () => {
 });
 
 describe('kb_write dedupe refusal logs a rediscovery', () => {
-  beforeEach(() => getDb().exec('DELETE FROM embeddings; DELETE FROM documents'));
+  beforeEach(() => getDb().exec(`
+    DELETE FROM embeddings;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `));
 
   it('logs a rediscovery row when the write is refused as a duplicate', async () => {
     const content = 'Queue workers acknowledge a message only after the write commits.';

@@ -1034,6 +1034,15 @@ describe('harvest candidate selection', () => {
   it('deduplicates a replay after a note write succeeds but the chunk checkpoint is missing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kb-roots-'));
     const path = join(root, 'crash-replay.jsonl');
+    getDb().prepare(`
+      DELETE FROM vault_files
+      WHERE document_id IN (
+        SELECT id FROM documents WHERE title = 'Middle sentinel'
+      )
+    `).run();
+    getDb().prepare(
+      "UPDATE documents SET source = NULL WHERE title = 'Middle sentinel'"
+    ).run();
     getDb().prepare("DELETE FROM documents WHERE title = 'Middle sentinel'").run();
     writeTranscript(path, [
       JSON.stringify({ type: 'attachment', entrypoint: 'cli' }),

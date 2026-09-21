@@ -4,7 +4,9 @@
 import { splitTags, canonicalTag, getTagAliasMap } from './tags.js';
 
 function loadDocs(db, aliasMap) {
-  return db.prepare('SELECT id, title, content, tags, created_at FROM documents').all()
+  return db.prepare(
+    'SELECT id, title, content, tags, created_at FROM documents WHERE detached_at IS NULL'
+  ).all()
     .map(d => ({ ...d, tagSet: new Set(splitTags(d.tags).map(t => canonicalTag(t, aliasMap))) }))
     .filter(d => d.tagSet.size > 0);
 }

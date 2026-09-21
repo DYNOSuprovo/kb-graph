@@ -105,8 +105,11 @@ describe('post-sync vault reindex', () => {
         6,
       );
     } finally {
+      database.prepare(
+        "UPDATE documents SET source = replace(source, 'vault:', 'test-cleanup:') WHERE source LIKE 'vault:missing-route/%'"
+      ).run();
       database.prepare("DELETE FROM vault_files WHERE vault_path LIKE 'missing-route/%'").run();
-      database.prepare("DELETE FROM documents WHERE source LIKE 'vault:missing-route/%'").run();
+      database.prepare("DELETE FROM documents WHERE source LIKE 'test-cleanup:missing-route/%'").run();
     }
   });
 });

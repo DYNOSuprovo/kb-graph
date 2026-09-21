@@ -25,6 +25,7 @@ function resetDb() {
     DELETE FROM facts;
     DELETE FROM entity_aliases;
     DELETE FROM entities;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
     DELETE FROM vault_files;
     DELETE FROM documents;
     DELETE FROM harvest_log;

@@ -30,7 +30,7 @@ function stateSlug(project) {
 export function freshSessionsByProject() {
   const rows = getDb().prepare(`
     SELECT vault_path, title, project, created_at
-    FROM vault_files WHERE note_type = 'session'
+    FROM vault_files WHERE note_type = 'session' AND missing_at IS NULL
     ORDER BY created_at ASC
   `).all();
   const byProject = {};

@@ -204,7 +204,9 @@ export function filterAliases(aliases, { title, tags, content }) {
     : typeof aliases === 'string' ? [aliases] : [];
   if (!proposed.length) return '';
   const db = getDb();
-  const total = db.prepare('SELECT COUNT(*) c FROM documents').get().c;
+  const total = db.prepare(
+    'SELECT COUNT(*) c FROM documents WHERE detached_at IS NULL'
+  ).get().c;
   const own = new Set([...tokenize(title), ...tokenize(tags)]);
   const note = [...new Set(tokenize(`${title} ${tags} ${content}`))];
   const noteSet = new Set(note);
@@ -233,7 +235,9 @@ export function relevantNotes(prompt, { limit = 3, explain = false } = {}) {
   // Every indexed document, because that is the universe vocab's df counts over.
   // An N from a smaller population makes ln(N/df) negative for common terms — a
   // shared word that lowers a note's score. Live/archive filtering is retrieval.
-  const total = db.prepare('SELECT COUNT(*) c FROM documents').get().c;
+  const total = db.prepare(
+    'SELECT COUNT(*) c FROM documents WHERE detached_at IS NULL'
+  ).get().c;
   if (!total) return [];
 
   const termFreq = new Map();
@@ -286,6 +290,7 @@ export function relevantNotes(prompt, { limit = 3, explain = false } = {}) {
         SELECT vf.content_hash
         FROM vault_files vf
         WHERE vf.document_id = d.id
+          AND vf.missing_at IS NULL
           AND vf.content_hash IS NOT NULL
           AND vf.content_hash != ''
         ORDER BY vf.indexed_at DESC, vf.id DESC
@@ -294,6 +299,7 @@ export function relevantNotes(prompt, { limit = 3, explain = false } = {}) {
     FROM documents_fts f
     JOIN documents d ON d.id = f.rowid
     WHERE documents_fts MATCH ?
+      AND d.detached_at IS NULL
       AND d.superseded_at IS NULL
       AND d.doc_type != 'archive'
     ORDER BY bm25(documents_fts, 10.0, 1.0, 5.0)

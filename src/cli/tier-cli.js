@@ -7,7 +7,7 @@ export function runTierCli(args) {
   const apply = args.includes('--apply');
 
   const counts = getDb().prepare(
-    'SELECT tier, COUNT(*) c FROM documents WHERE superseded_at IS NULL GROUP BY tier ORDER BY c DESC'
+    'SELECT tier, COUNT(*) c FROM documents WHERE detached_at IS NULL AND superseded_at IS NULL GROUP BY tier ORDER BY c DESC'
   ).all();
   console.log('Live notes by tier:');
   for (const row of counts) console.log(`  ${tierLabel(row.tier).padEnd(12)} ${row.c}  — ${TIER_MEANING[row.tier]}`);

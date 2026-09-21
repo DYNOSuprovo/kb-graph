@@ -31,7 +31,11 @@ function activeStateNote(db, session, states) {
       FROM retrievals r
       JOIN vault_files vf ON vf.document_id = r.doc_id
       JOIN documents d ON d.id = vf.document_id
-      WHERE r.session = ? AND r.surface IN (${placeholders}) AND vf.note_type = 'state' AND d.superseded_at IS NULL
+      WHERE r.session = ? AND r.surface IN (${placeholders})
+        AND vf.note_type = 'state'
+        AND vf.missing_at IS NULL
+        AND d.detached_at IS NULL
+        AND d.superseded_at IS NULL
       ORDER BY r.created_at DESC
       LIMIT 1
     `).get(session, ...READ_SURFACES);
@@ -76,16 +80,18 @@ async function readStdin() {
 export function computeWakeupHook({ hookInput, session, agent = null, fastWrite = false, commit = true }) {
   try {
     const db = getDb();
-    const total = db.prepare('SELECT COUNT(*) as c FROM documents').get().c;
+    const total = db.prepare(
+      'SELECT COUNT(*) as c FROM documents WHERE detached_at IS NULL'
+    ).get().c;
     const facts = db.prepare('SELECT COUNT(*) as c FROM facts WHERE valid_to IS NULL').get().c;
     const byType = db.prepare(
-      'SELECT note_type, COUNT(*) as c FROM vault_files WHERE note_type IS NOT NULL GROUP BY note_type ORDER BY c DESC LIMIT 6'
+      'SELECT note_type, COUNT(*) as c FROM vault_files WHERE missing_at IS NULL AND note_type IS NOT NULL GROUP BY note_type ORDER BY c DESC LIMIT 6'
     ).all();
     // LEFT JOIN so vault files without a linked document still show; the
     // filter drops only notes whose document is superseded (superseded_at is
     // NULL for both live and unlinked rows).
     const recent = db.prepare(
-      "SELECT vf.title, vf.note_type, vf.project, d.tier FROM vault_files vf LEFT JOIN documents d ON d.id = vf.document_id WHERE vf.note_type NOT IN ('archive') AND d.superseded_at IS NULL ORDER BY vf.indexed_at DESC LIMIT 8"
+      "SELECT vf.title, vf.note_type, vf.project, d.tier FROM vault_files vf LEFT JOIN documents d ON d.id = vf.document_id WHERE vf.missing_at IS NULL AND vf.note_type NOT IN ('archive') AND d.detached_at IS NULL AND d.superseded_at IS NULL ORDER BY vf.indexed_at DESC LIMIT 8"
     ).all();
     // Same gate as the hint: a standing line reading "inferred 2062" every
     // session, and a mark on every row below it, say nothing while the store
@@ -100,12 +106,12 @@ export function computeWakeupHook({ hookInput, session, agent = null, fastWrite 
       : `health: ⚠ ${warnings.join(' | ')}`;
 
     const states = db.prepare(
-      "SELECT vf.title, vf.document_id, d.tier, d.updated_at FROM vault_files vf JOIN documents d ON d.id = vf.document_id WHERE vf.note_type = 'state' AND d.superseded_at IS NULL ORDER BY d.updated_at DESC LIMIT ?"
+      "SELECT vf.title, vf.document_id, d.tier, d.updated_at FROM vault_files vf JOIN documents d ON d.id = vf.document_id WHERE vf.missing_at IS NULL AND vf.note_type = 'state' AND d.detached_at IS NULL AND d.superseded_at IS NULL ORDER BY d.updated_at DESC LIMIT ?"
     ).all(BRIEFING_STATE_LIMIT);
     // Total live state notes, independent of the LIMIT above — decides whether
     // the "more workstreams" pointer line prints below.
     const stateCount = db.prepare(
-      "SELECT COUNT(*) as c FROM vault_files vf JOIN documents d ON d.id = vf.document_id WHERE vf.note_type = 'state' AND d.superseded_at IS NULL"
+      "SELECT COUNT(*) as c FROM vault_files vf JOIN documents d ON d.id = vf.document_id WHERE vf.missing_at IS NULL AND vf.note_type = 'state' AND d.detached_at IS NULL AND d.superseded_at IS NULL"
     ).get().c;
     // One event id for the whole SessionStart -- the briefing is one decision
     // (these are the workstreams surfaced this run), not one per state note,
