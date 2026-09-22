@@ -259,7 +259,10 @@ export function rebuildTriggerIndex(path = TRIGGER_INDEX_PATH) {
   // (as prompt-hint does) without opening the database on the hot path.
   const rows = getDb().prepare(`
     SELECT id, title, tier, triggers, content FROM documents
-    WHERE triggers IS NOT NULL AND superseded_at IS NULL AND doc_type != 'archive'
+    WHERE triggers IS NOT NULL
+      AND detached_at IS NULL
+      AND superseded_at IS NULL
+      AND doc_type != 'archive'
     ORDER BY id
   `).all();
   // One bad row (a hand SQL edit, a write that landed half-done) must not

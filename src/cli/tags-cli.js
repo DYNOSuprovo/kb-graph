@@ -4,7 +4,9 @@ import { aliasCandidatePair } from '../tunnels.js';
 
 function collectRawTags(db) {
   const counts = new Map(); // raw trimmed token -> count (case preserved)
-  for (const row of db.prepare("SELECT tags FROM documents WHERE tags != ''").all()) {
+  for (const row of db.prepare(
+    "SELECT tags FROM documents WHERE detached_at IS NULL AND tags != ''"
+  ).all()) {
     for (const raw of row.tags.split(',')) {
       const t = raw.trim();
       if (t) counts.set(t, (counts.get(t) || 0) + 1);

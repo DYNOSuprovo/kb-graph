@@ -31,6 +31,10 @@ describe('retrievalReport coverage', () => {
     const read = insertDoc(db, { title: 'read' });
     insertDoc(db, { title: 'untouched' });
     insertDoc(db, { title: 'retired', superseded: true });
+    const detached = insertDoc(db, { title: 'detached' });
+    db.prepare(
+      "UPDATE documents SET detached_at = CURRENT_TIMESTAMP, detached_reason = 'vault_missing' WHERE id = ?"
+    ).run(detached);
     insertRetrieval(db, { docId: read, surface: 'kb_read' });
 
     const { coverage } = retrievalReport(db);
@@ -69,6 +73,10 @@ describe('retrievalReport freshness', () => {
     const slow = insertDoc(db, { created_at: daysAgo(60) });
     insertRetrieval(db, { docId: slow, surface: 'kb_read', created_at: daysAgo(1) }); // ~59 days after writing
 
+    const detached = insertDoc(db, { created_at: daysAgo(2) });
+    db.prepare(
+      "UPDATE documents SET detached_at = CURRENT_TIMESTAMP, detached_reason = 'vault_missing' WHERE id = ?"
+    ).run(detached);
     insertDoc(db, { created_at: daysAgo(200) }); // outside the 90-day window entirely
 
     const { freshness } = retrievalReport(db);

@@ -13,6 +13,7 @@ import { canonicalPredicate } from './predicates.js';
 import { authoredBody } from './embeddings/embed.js';
 import { FTS_OUTCOME_TIE_BUCKET, compareByOutcomeSignal } from './outcome-ranking.js';
 import { addColumn, applyMigrations, ensureSchemaReady, hasColumn, hasIndex, hasTable } from './schema.js';
+import { sessionCaptureQueueStatus } from './session-capture.js';
 
 let db = null;
 
@@ -20,10 +21,36 @@ let db = null;
 // explicit so retrieval.js's fast-write path has a real value to restore,
 // not a number it has to keep in sync with an implicit default by hand.
 export const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+export const DOCUMENT_DETACH_REASON = Object.freeze({
+  VAULT_MISSING: 'vault_missing',
+  EXPLICIT_DELETE: 'explicit_delete',
+});
+export const TOMBSTONE_REASON = Object.freeze({
+  GRACE_EXPIRED: 'detached_grace_expired',
+});
+export const DETACHED_PURGE_BATCH_SIZE = 100;
+export const KB_WRITER_SCHEMA_VERSION = 30;
+export const IDENTITY_REPAIR_STATUS = Object.freeze({
+  APPLYING: 'applying',
+  APPLIED: 'applied',
+  UNDOING: 'undoing',
+  UNDONE: 'undone',
+});
+const DETACHMENT_SCHEMA_MARKER = 'document-detachment-v1';
+const DETACHED_CONTENT_HASH_SENTINEL = 'detached';
+
+export function configureKnowledgeBaseConnection(database) {
+  database.function(
+    'kb_writer_schema_version',
+    { deterministic: true },
+    () => KB_WRITER_SCHEMA_VERSION,
+  );
+}
 
 function getDb() {
   if (!db) {
     const opened = new Database(DB_PATH);
+    configureKnowledgeBaseConnection(opened);
     opened.pragma('journal_mode = WAL');
     opened.pragma(`busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
     opened.pragma('wal_autocheckpoint = 100');  // Checkpoint every 100 pages (~400KB) to prevent WAL bloat
@@ -867,6 +894,236 @@ export const MIGRATIONS = [{
         ON tool_calls(session, created_at);
     `);
   },
+}, {
+  version: 30,
+  // Missing vault files are a reversible source-state transition, not document
+  // deletion. Keep the document row and its historical foreign keys intact;
+  // current-state readers filter detached_at and the retained vault_files row
+  // is the stable path/hash identity used for same-path and exact-hash return.
+  name: 'document detachment lifecycle and audited tombstones',
+  applied: db => [
+    ['documents', 'detached_at'],
+    ['documents', 'detached_reason'],
+    ['vault_files', 'missing_at'],
+    ['vault_files', 'detached_content_hash'],
+  ].every(([table, column]) => hasColumn(db, table, column))
+    && hasTable(db, 'document_tombstones')
+    && hasIndex(db, 'idx_documents_attached_current')
+    && hasIndex(db, 'idx_vault_files_present_hash')
+    && hasIndex(db, 'idx_vault_files_missing_hash')
+    && db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name IN (
+          'documents_ai',
+          'documents_ad',
+          'documents_au',
+          'documents_require_vault_tombstone',
+          'documents_require_current_writer_insert',
+          'documents_require_current_writer_update',
+          'embeddings_require_current_writer_insert',
+          'embeddings_require_current_writer_update',
+          'embeddings_require_current_writer_delete',
+          'vault_files_require_current_writer_insert',
+          'vault_files_require_current_writer_update',
+          'vault_files_require_current_writer_delete'
+        )
+    `).get().count === 12
+    && !db.prepare(`
+      SELECT 1 FROM sqlite_master
+      WHERE type = 'trigger' AND name IN ('documents_au_delete', 'documents_au_insert')
+    `).get()
+    && db.prepare(
+      "SELECT value FROM meta WHERE key = 'schema:document-detachment'"
+    ).get()?.value === DETACHMENT_SCHEMA_MARKER,
+  up: db => {
+    addColumn(db, 'documents', 'detached_at', 'DATETIME');
+    addColumn(
+      db,
+      'documents',
+      'detached_reason',
+      `TEXT CHECK (detached_reason IS NULL OR detached_reason IN ('${
+        DOCUMENT_DETACH_REASON.VAULT_MISSING
+      }', '${DOCUMENT_DETACH_REASON.EXPLICIT_DELETE}'))`,
+    );
+    addColumn(db, 'vault_files', 'missing_at', 'DATETIME');
+    addColumn(db, 'vault_files', 'detached_content_hash', 'TEXT');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS document_tombstones (
+        document_id INTEGER PRIMARY KEY,
+        vault_path TEXT,
+        content_hash TEXT,
+        detached_at DATETIME,
+        deleted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        reason TEXT NOT NULL CHECK (reason IN ('${TOMBSTONE_REASON.GRACE_EXPIRED}'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_documents_attached_current
+        ON documents(doc_type, created_at DESC)
+        WHERE detached_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_vault_files_present_hash
+        ON vault_files(content_hash)
+        WHERE missing_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_vault_files_missing_hash
+        ON vault_files(detached_content_hash)
+        WHERE missing_at IS NOT NULL;
+
+      DROP TRIGGER IF EXISTS documents_ai;
+      DROP TRIGGER IF EXISTS documents_ad;
+      DROP TRIGGER IF EXISTS documents_au;
+      DROP TRIGGER IF EXISTS documents_au_delete;
+      DROP TRIGGER IF EXISTS documents_au_insert;
+
+      CREATE TRIGGER documents_ai AFTER INSERT ON documents
+      WHEN new.detached_at IS NULL BEGIN
+        INSERT INTO documents_fts(rowid, title, content, tags)
+        VALUES (new.id, new.title, new.content, new.tags);
+      END;
+      CREATE TRIGGER documents_ad AFTER DELETE ON documents
+      WHEN old.detached_at IS NULL BEGIN
+        INSERT INTO documents_fts(documents_fts, rowid, title, content, tags)
+        VALUES('delete', old.id, old.title, old.content, old.tags);
+      END;
+      CREATE TRIGGER documents_au AFTER UPDATE ON documents BEGIN
+        INSERT INTO documents_fts(documents_fts, rowid, title, content, tags)
+        SELECT 'delete', old.id, old.title, old.content, old.tags
+        WHERE old.detached_at IS NULL;
+        INSERT INTO documents_fts(rowid, title, content, tags)
+        SELECT new.id, new.title, new.content, new.tags
+        WHERE new.detached_at IS NULL;
+      END;
+
+      CREATE TRIGGER documents_require_vault_tombstone
+      BEFORE DELETE ON documents
+      WHEN (
+          old.source LIKE 'vault:%'
+          OR EXISTS (SELECT 1 FROM vault_files WHERE document_id = old.id)
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM document_tombstones tombstone
+          WHERE tombstone.document_id = old.id
+            AND tombstone.detached_at IS old.detached_at
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'vault-backed document hard delete requires an audited tombstone');
+      END;
+
+      CREATE TRIGGER documents_require_current_writer_insert
+      BEFORE INSERT ON documents
+      WHEN new.source LIKE 'vault:%'
+        AND kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+      CREATE TRIGGER documents_require_current_writer_update
+      BEFORE UPDATE ON documents
+      WHEN (old.source LIKE 'vault:%' OR new.source LIKE 'vault:%')
+        AND kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+
+      CREATE TRIGGER embeddings_require_current_writer_insert
+      BEFORE INSERT ON embeddings
+      WHEN EXISTS (
+          SELECT 1 FROM documents
+          WHERE id = new.document_id AND source LIKE 'vault:%'
+        )
+        AND kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+      CREATE TRIGGER embeddings_require_current_writer_update
+      BEFORE UPDATE ON embeddings
+      WHEN EXISTS (
+          SELECT 1 FROM documents
+          WHERE id IN (old.document_id, new.document_id) AND source LIKE 'vault:%'
+        )
+        AND kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+      CREATE TRIGGER embeddings_require_current_writer_delete
+      BEFORE DELETE ON embeddings
+      WHEN EXISTS (
+          SELECT 1 FROM documents
+          WHERE id = old.document_id AND source LIKE 'vault:%'
+        )
+        AND kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+
+      CREATE TRIGGER vault_files_require_current_writer_insert
+      BEFORE INSERT ON vault_files
+      WHEN kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+      CREATE TRIGGER vault_files_require_current_writer_update
+      BEFORE UPDATE ON vault_files
+      WHEN kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+      CREATE TRIGGER vault_files_require_current_writer_delete
+      BEFORE DELETE ON vault_files
+      WHEN kb_writer_schema_version() < ${KB_WRITER_SCHEMA_VERSION}
+      BEGIN
+        SELECT RAISE(ABORT, 'vault writer is older than schema 30');
+      END;
+
+      INSERT INTO meta (key, value, updated_at)
+      VALUES ('schema:document-detachment', '${DETACHMENT_SCHEMA_MARKER}', CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = CURRENT_TIMESTAMP;
+    `);
+  },
+}, {
+  version: 31,
+  name: 'resumable identity repair ledger',
+  applied: db => hasTable(db, 'identity_repair_runs')
+    && hasTable(db, 'identity_repair_ledger')
+    && hasIndex(db, 'idx_identity_repair_ledger_pending_undo'),
+  up: db => db.exec(`
+    CREATE TABLE IF NOT EXISTS identity_repair_runs (
+      run_id TEXT PRIMARY KEY,
+      plan_hash TEXT NOT NULL UNIQUE,
+      backup_sha256 TEXT NOT NULL,
+      live_schema_version INTEGER NOT NULL,
+      backup_schema_version INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (
+        status IN (
+          '${IDENTITY_REPAIR_STATUS.APPLYING}',
+          '${IDENTITY_REPAIR_STATUS.APPLIED}',
+          '${IDENTITY_REPAIR_STATUS.UNDOING}',
+          '${IDENTITY_REPAIR_STATUS.UNDONE}'
+        )
+      ),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_repair_ledger (
+      run_id TEXT NOT NULL REFERENCES identity_repair_runs(run_id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      target_table TEXT NOT NULL,
+      target_column TEXT NOT NULL,
+      row_id INTEGER NOT NULL,
+      before_json TEXT NOT NULL,
+      after_json TEXT NOT NULL,
+      match_method TEXT NOT NULL,
+      applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      undone_at DATETIME,
+      PRIMARY KEY (run_id, sequence),
+      UNIQUE (run_id, target_table, target_column, row_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_identity_repair_ledger_pending_undo
+      ON identity_repair_ledger(run_id, sequence DESC)
+      WHERE undone_at IS NULL;
+  `),
 }];
 
 // SQL's restatement of isTestSession() (src/retrieval.js) -- SQLite has no
@@ -955,6 +1212,7 @@ function planPredicateFold(db) {
 // the only callers — connecting verifies instead, so that no ordinary command
 // can migrate a database as a side effect of reading it.
 function initSchema(db) {
+  configureKnowledgeBaseConnection(db);
   return applyMigrations(db, MIGRATIONS);
 }
 
@@ -991,10 +1249,31 @@ export function updateDocument(id, { title, tags }) {
   return stmt.run(title, normalizeTagString(tags), id);
 }
 
+function detachDocumentRecord(database, documentId, reason) {
+  database.prepare(`
+    UPDATE documents
+    SET detached_at = COALESCE(detached_at, CURRENT_TIMESTAMP),
+        detached_reason = COALESCE(detached_reason, ?)
+    WHERE id = ?
+  `).run(reason, documentId);
+  database.prepare('DELETE FROM embeddings WHERE document_id = ?').run(documentId);
+}
+
 export function deleteDocument(id) {
-  const doc = getDb().prepare('SELECT file_path FROM documents WHERE id = ?').get(id);
-  getDb().prepare('DELETE FROM documents WHERE id = ?').run(id);
-  return doc ? doc.file_path : null;
+  const database = getDb();
+  return database.transaction(() => {
+    const doc = database.prepare('SELECT file_path FROM documents WHERE id = ?').get(id);
+    if (!doc) return null;
+    detachDocumentRecord(database, id, DOCUMENT_DETACH_REASON.EXPLICIT_DELETE);
+    database.prepare(`
+      UPDATE vault_files
+      SET detached_content_hash = COALESCE(detached_content_hash, content_hash),
+          content_hash = ?,
+          missing_at = COALESCE(missing_at, CURRENT_TIMESTAMP)
+      WHERE document_id = ?
+    `).run(DETACHED_CONTENT_HASH_SENTINEL, id);
+    return doc.file_path;
+  })();
 }
 
 // Common English stop words to filter from search queries
@@ -1084,7 +1363,7 @@ function preferOutcomeWithinRankBucket(results) {
 function ftsSearch(query, limit, { tags, project, type, includeSuperseded }) {
   const { clauses, params } = tagFilterFor(tags ?? '', 'd.tags');
   if (project) {
-    clauses.push('EXISTS (SELECT 1 FROM vault_files vf WHERE vf.document_id = d.id AND vf.project = ?)');
+    clauses.push('EXISTS (SELECT 1 FROM vault_files vf WHERE vf.document_id = d.id AND vf.missing_at IS NULL AND vf.project = ?)');
     params.push(project);
   }
   if (type) {
@@ -1094,7 +1373,9 @@ function ftsSearch(query, limit, { tags, project, type, includeSuperseded }) {
   const filter = clauses.map(c => `AND ${c}`).join(' ');
   // Superseded notes drop out of current-state recall unless explicitly asked
   // for. No bound param — the clause is a literal, so param arrays are unchanged.
-  const supersededFilter = includeSuperseded ? '' : 'AND d.superseded_at IS NULL';
+  const lifecycleFilter = `AND d.detached_at IS NULL ${
+    includeSuperseded ? '' : 'AND d.superseded_at IS NULL'
+  }`;
 
   // Strip punctuation, split into terms, remove stop words
   const terms = query
@@ -1118,7 +1399,7 @@ function ftsSearch(query, limit, { tags, project, type, includeSuperseded }) {
       JOIN documents d ON d.id = f.rowid
       WHERE documents_fts MATCH ?
       ${filter}
-      ${supersededFilter}
+      ${lifecycleFilter}
       ORDER BY rank
       LIMIT ?
     `);
@@ -1139,7 +1420,7 @@ function ftsSearch(query, limit, { tags, project, type, includeSuperseded }) {
     JOIN documents d ON d.id = f.rowid
     WHERE documents_fts MATCH ?
     ${filter}
-    ${supersededFilter}
+    ${lifecycleFilter}
     ORDER BY rank
     LIMIT ?
   `);
@@ -1176,6 +1457,7 @@ export function listDocuments({ type, tag, limit = 50, offset = 0, includeSupers
   if (!includeSuperseded) {
     conditions.push('superseded_at IS NULL');
   }
+  conditions.push('detached_at IS NULL');
 
   if (conditions.length > 0) {
     sql += ' WHERE ' + conditions.join(' AND ');
@@ -1269,6 +1551,7 @@ export function supersedeCandidates({ since = null, limit = 20 } = {}) {
            (CASE WHEN title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS title_hit
     FROM documents
     WHERE superseded_at IS NULL
+      AND detached_at IS NULL
       AND doc_type != 'archive'
       AND (title LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
       AND content LIKE ? ESCAPE '\\'
@@ -1276,7 +1559,7 @@ export function supersedeCandidates({ since = null, limit = 20 } = {}) {
   `);
   const replacementNotes = db.prepare(`
     SELECT id, title, content FROM documents
-    WHERE superseded_at IS NULL AND doc_type != 'archive'
+    WHERE superseded_at IS NULL AND detached_at IS NULL AND doc_type != 'archive'
       AND id != ? AND created_at > ?
       AND (title LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
       AND content LIKE ? ESCAPE '\\'
@@ -1342,6 +1625,7 @@ export function backfillTiers({ apply = false } = {}) {
     SELECT d.id, d.tier,
            CASE WHEN vf.document_id IS NULL THEN d.source ELSE vf.source END AS provenance
     FROM documents d LEFT JOIN vault_files vf ON vf.document_id = d.id
+    WHERE d.detached_at IS NULL
   `).all();
 
   const families = new Map();
@@ -1372,15 +1656,22 @@ export function backfillTiers({ apply = false } = {}) {
 }
 
 export function getStats() {
-  const count = getDb().prepare('SELECT COUNT(*) as count FROM documents').get().count;
-  const totalSize = getDb().prepare('SELECT COALESCE(SUM(file_size), 0) as total FROM documents').get().total;
+  const count = getDb().prepare(
+    'SELECT COUNT(*) as count FROM documents WHERE detached_at IS NULL'
+  ).get().count;
+  const detached = getDb().prepare(
+    'SELECT COUNT(*) as count FROM documents WHERE detached_at IS NOT NULL'
+  ).get().count;
+  const totalSize = getDb().prepare(
+    'SELECT COALESCE(SUM(file_size), 0) as total FROM documents WHERE detached_at IS NULL'
+  ).get().total;
   let dbFileSize = 0;
   try {
     dbFileSize = statSync(DB_PATH).size;
   } catch {
     // DB file may not exist yet
   }
-  return { count, totalSize, dbFileSize };
+  return { count, detached, totalSize, dbFileSize };
 }
 
 // Notes per tag, biggest first. Grouping on the stored string counts tag
@@ -1389,7 +1680,9 @@ export function getStats() {
 export function tagCounts(limit = 15) {
   const aliasMap = getTagAliasMap(getDb());
   const counts = new Map();
-  for (const row of getDb().prepare("SELECT tags FROM documents WHERE tags != ''").all()) {
+  for (const row of getDb().prepare(
+    "SELECT tags FROM documents WHERE detached_at IS NULL AND tags != ''"
+  ).all()) {
     for (const tag of new Set(splitTags(row.tags).map(t => canonicalTag(t, aliasMap)))) {
       counts.set(tag, (counts.get(tag) || 0) + 1);
     }
@@ -1401,13 +1694,36 @@ export function tagCounts(limit = 15) {
 }
 
 export function getDocumentCount() {
-  return getDb().prepare('SELECT COUNT(*) as count FROM documents').get().count;
+  return getDb().prepare(
+    'SELECT COUNT(*) as count FROM documents WHERE detached_at IS NULL'
+  ).get().count;
 }
 
 // The reindex path: the vault file is the source of truth, so the tier it
 // declares wins on every pass. tier_at only moves when the tier itself does —
 // in an UPDATE the right-hand sides still see the pre-update row.
-export function updateDocumentFull(id, { title, content, tags, doc_type, source, file_path, file_size, tier, tier_ref }) {
+export function updateDocumentFull(
+  id,
+  { title, content, tags, doc_type, source, file_path, file_size, tier, tier_ref },
+  { preserveTier = false } = {},
+) {
+  if (preserveTier) {
+    return getDb().prepare(`
+      UPDATE documents
+      SET title = ?, content = ?, tags = ?, doc_type = ?, source = ?, file_path = ?,
+          file_size = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      title,
+      content,
+      normalizeTagString(tags),
+      doc_type,
+      source,
+      file_path,
+      file_size,
+      id,
+    );
+  }
   const graded = resolveTier({ tier, ref: tier_ref });
   const stmt = getDb().prepare(`
     UPDATE documents SET title = ?, content = ?, tags = ?, doc_type = ?, source = ?, file_path = ?, file_size = ?,
@@ -1428,7 +1744,7 @@ export function updateDocumentFull(id, { title, content, tags, doc_type, source,
 // that way. What promotion still requires is the reference.
 export function promoteDocumentTier(id, { tier, confirmedBy }) {
   const doc = getDocument(id);
-  if (!doc) return null;
+  if (!doc || doc.detached_at) return null;
 
   const evidence = normalizeRef(confirmedBy);
   if (!evidence) {
@@ -1446,40 +1762,193 @@ export function promoteDocumentTier(id, { tier, confirmedBy }) {
 }
 
 export function getVaultFile(vaultPath) {
-  return getDb().prepare('SELECT * FROM vault_files WHERE vault_path = ?').get(vaultPath);
+  const row = getDb().prepare('SELECT * FROM vault_files WHERE vault_path = ?').get(vaultPath);
+  if (row?.detached_content_hash) row.content_hash = row.detached_content_hash;
+  return row;
+}
+
+export function moveVaultFile({ fromVaultPath, toVaultPath, contentHash }) {
+  const database = getDb();
+  return database.transaction(() => {
+    const target = database.prepare(
+      'SELECT document_id FROM vault_files WHERE vault_path = ?'
+    ).get(toVaultPath);
+    if (target) return target.document_id || null;
+
+    const source = database.prepare(`
+      SELECT document_id
+      FROM vault_files
+      WHERE vault_path = ? AND COALESCE(detached_content_hash, content_hash) = ?
+    `).get(fromVaultPath, contentHash);
+    if (!source?.document_id) return null;
+
+    const moved = database.prepare(`
+      UPDATE vault_files
+      SET vault_path = ?, content_hash = ?, detached_content_hash = NULL,
+          missing_at = NULL, indexed_at = CURRENT_TIMESTAMP
+      WHERE vault_path = ? AND COALESCE(detached_content_hash, content_hash) = ?
+    `).run(toVaultPath, contentHash, fromVaultPath, contentHash);
+    if (moved.changes !== 1) return null;
+    database.prepare(`
+      UPDATE documents
+      SET detached_at = NULL, detached_reason = NULL
+      WHERE id = ?
+    `).run(source.document_id);
+    return source.document_id;
+  }).immediate();
 }
 
 export function upsertVaultFile({ vault_path, content_hash, document_id, title, note_type, tags, project, status, source, confidence, summary, key_topics }) {
-  const stmt = getDb().prepare(`
-    INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type, tags, project, status, source, confidence, summary, key_topics, indexed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(vault_path) DO UPDATE SET
-      content_hash = excluded.content_hash,
-      document_id = excluded.document_id,
-      title = excluded.title,
-      note_type = excluded.note_type,
-      tags = excluded.tags,
-      project = excluded.project,
-      status = excluded.status,
-      source = excluded.source,
-      confidence = excluded.confidence,
-      summary = excluded.summary,
-      key_topics = excluded.key_topics,
-      indexed_at = CURRENT_TIMESTAMP
-  `);
-  return stmt.run(vault_path, content_hash, document_id, title, note_type, tags || '', project, status, source, confidence, summary || null, key_topics ? JSON.stringify(key_topics) : null);
+  const database = getDb();
+  return database.transaction(() => {
+    const result = database.prepare(`
+      INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type, tags, project, status, source, confidence, summary, key_topics, missing_at, detached_content_hash, indexed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP)
+      ON CONFLICT(vault_path) DO UPDATE SET
+        content_hash = excluded.content_hash,
+        document_id = excluded.document_id,
+        title = excluded.title,
+        note_type = excluded.note_type,
+        tags = excluded.tags,
+        project = excluded.project,
+        status = excluded.status,
+        source = excluded.source,
+        confidence = excluded.confidence,
+        summary = excluded.summary,
+        key_topics = excluded.key_topics,
+        missing_at = NULL,
+        detached_content_hash = NULL,
+        indexed_at = CURRENT_TIMESTAMP
+    `).run(
+      vault_path,
+      content_hash,
+      document_id,
+      title,
+      note_type,
+      tags || '',
+      project,
+      status,
+      source,
+      confidence,
+      summary || null,
+      key_topics ? JSON.stringify(key_topics) : null,
+    );
+    if (document_id) {
+      database.prepare(`
+        UPDATE documents
+        SET detached_at = NULL, detached_reason = NULL
+        WHERE id = ?
+      `).run(document_id);
+    }
+    return result;
+  })();
 }
 
-export function deleteVaultFile(vaultPath) {
-  const vf = getDb().prepare('SELECT document_id FROM vault_files WHERE vault_path = ?').get(vaultPath);
-  if (vf && vf.document_id) {
-    getDb().prepare('DELETE FROM documents WHERE id = ?').run(vf.document_id);
-  }
-  getDb().prepare('DELETE FROM vault_files WHERE vault_path = ?').run(vaultPath);
+export function detachVaultFile(vaultPath) {
+  const database = getDb();
+  return database.transaction(() => {
+    const vf = database.prepare(
+      'SELECT document_id FROM vault_files WHERE vault_path = ?'
+    ).get(vaultPath);
+    if (!vf) return false;
+    database.prepare(`
+      UPDATE vault_files
+      SET detached_content_hash = COALESCE(detached_content_hash, content_hash),
+          content_hash = ?,
+          missing_at = COALESCE(missing_at, CURRENT_TIMESTAMP)
+      WHERE vault_path = ?
+    `).run(DETACHED_CONTENT_HASH_SENTINEL, vaultPath);
+    if (vf.document_id) {
+      detachDocumentRecord(database, vf.document_id, DOCUMENT_DETACH_REASON.VAULT_MISSING);
+    }
+    return true;
+  }).immediate();
 }
 
 export function getAllVaultPaths() {
-  return getDb().prepare('SELECT vault_path, content_hash FROM vault_files').all();
+  return getDb().prepare(`
+    SELECT vf.vault_path,
+           COALESCE(vf.detached_content_hash, vf.content_hash) AS content_hash,
+           vf.document_id, vf.missing_at, d.detached_at
+    FROM vault_files vf
+    LEFT JOIN documents d ON d.id = vf.document_id
+  `).all();
+}
+
+export function detachedDocumentPurgeScope(before) {
+  return getDb().prepare(`
+    SELECT COUNT(*) AS eligible, COALESCE(MAX(id), 0) AS max_id
+    FROM documents
+    WHERE detached_at IS NOT NULL AND detached_at <= ?
+  `).get(before);
+}
+
+export function detachedDocumentBatch({ before, afterId = 0, maxId, limit }) {
+  if (
+    !Number.isSafeInteger(afterId)
+    || !Number.isSafeInteger(maxId)
+    || !Number.isSafeInteger(limit)
+    || afterId < 0
+    || maxId < 0
+    || limit <= 0
+    || limit > DETACHED_PURGE_BATCH_SIZE
+  ) {
+    throw new Error('invalid detached document batch bounds');
+  }
+  return getDb().prepare(`
+    SELECT id
+    FROM documents
+    WHERE detached_at IS NOT NULL
+      AND detached_at <= ?
+      AND id > ?
+      AND id <= ?
+    ORDER BY id
+    LIMIT ?
+  `).all(before, afterId, maxId, limit).map(row => row.id);
+}
+
+export function purgeDetachedDocumentBatch(ids, { before }) {
+  if (!Array.isArray(ids) || ids.length === 0) return 0;
+  if (
+    ids.length > DETACHED_PURGE_BATCH_SIZE
+    || ids.some(id => !Number.isSafeInteger(id) || id <= 0)
+  ) {
+    throw new Error(
+      `detached purge batches require 1-${DETACHED_PURGE_BATCH_SIZE} positive document ids`
+    );
+  }
+  const database = getDb();
+  const placeholders = ids.map(() => '?').join(', ');
+  return database.transaction(() => {
+    database.prepare(`
+      INSERT INTO document_tombstones (
+        document_id, vault_path, content_hash, detached_at, reason
+      )
+      SELECT d.id, vf.vault_path,
+             COALESCE(vf.detached_content_hash, vf.content_hash),
+             d.detached_at, ?
+      FROM documents d
+      LEFT JOIN vault_files vf ON vf.document_id = d.id
+      WHERE d.id IN (${placeholders})
+        AND d.detached_at IS NOT NULL
+        AND d.detached_at <= ?
+    `).run(TOMBSTONE_REASON.GRACE_EXPIRED, ...ids, before);
+    database.prepare(`
+      DELETE FROM vault_files
+      WHERE document_id IN (
+        SELECT id FROM documents
+        WHERE id IN (${placeholders})
+          AND detached_at IS NOT NULL
+          AND detached_at <= ?
+      )
+    `).run(...ids, before);
+    return database.prepare(`
+      DELETE FROM documents
+      WHERE id IN (${placeholders})
+        AND detached_at IS NOT NULL
+        AND detached_at <= ?
+    `).run(...ids, before).changes;
+  }).immediate();
 }
 
 export function setMeta(key, value) {
@@ -1492,7 +1961,7 @@ export function setMeta(key, value) {
 // push surfaces cannot disagree about what the store contains.
 export function liveTierCounts() {
   return getDb().prepare(
-    'SELECT tier, COUNT(*) AS count FROM documents WHERE superseded_at IS NULL GROUP BY tier'
+    'SELECT tier, COUNT(*) AS count FROM documents WHERE superseded_at IS NULL AND detached_at IS NULL GROUP BY tier'
   ).all();
 }
 
@@ -1550,27 +2019,38 @@ function lineCount(path) {
 // backlog warnings measure growth against.
 export function getHealth({ recordBacklog = false } = {}) {
   const db = getDb();
-  const docs = db.prepare('SELECT COUNT(*) c FROM documents').get().c;
-  const embedded = db.prepare('SELECT COUNT(DISTINCT document_id) c FROM embeddings').get().c;
-  const vaultFiles = db.prepare('SELECT COUNT(*) c FROM vault_files').get().c;
+  const docs = db.prepare('SELECT COUNT(*) c FROM documents WHERE detached_at IS NULL').get().c;
+  const detached = db.prepare(
+    'SELECT COUNT(*) c FROM documents WHERE detached_at IS NOT NULL'
+  ).get().c;
+  const embedded = db.prepare(`
+    SELECT COUNT(DISTINCT e.document_id) c
+    FROM embeddings e
+    JOIN documents d ON d.id = e.document_id
+    WHERE d.detached_at IS NULL
+  `).get().c;
+  const vaultFiles = db.prepare(
+    'SELECT COUNT(*) c FROM vault_files WHERE missing_at IS NULL'
+  ).get().c;
   const summarized = db.prepare(
-    "SELECT COUNT(*) c FROM vault_files WHERE summary IS NOT NULL AND summary != ''"
+    "SELECT COUNT(*) c FROM vault_files WHERE missing_at IS NULL AND summary IS NOT NULL AND summary != ''"
   ).get().c;
 
   const ageHours = (row) => row ? (Date.now() - new Date(row.updated_at + 'Z').getTime()) / 3600000 : null;
   const reindex = getMeta('last_reindex');
-  // A heartbeat has to record that the job ran, not what it happened to find:
-  // harvest_log only grows when there was a transcript worth reading, so a
-  // quiet weekend used to look identical to a broken launchd job. Fall back to
-  // the log for installs whose last run predates the heartbeat.
+  // A heartbeat has to record that the scheduled maintenance job ran, not what
+  // it happened to find. Capture-only recovery also writes harvest_log, so
+  // those rows cannot prove the nightly loop is alive.
   const harvest = getMeta('last_harvest');
-  const harvestLogged = db.prepare("SELECT MAX(harvested_at) t FROM harvest_log").get()?.t || null;
-  const lastHarvest = harvest?.updated_at || harvestLogged;
+  const harvestErrors = Number(getMeta('last_harvest_errors')?.value || 0);
+  const lastHarvest = harvest?.updated_at || null;
   const harvestAge = lastHarvest ? (Date.now() - new Date(lastHarvest + 'Z').getTime()) / 3600000 : null;
   const synthesis = getMeta('last_synthesis');
+  const captureQueue = sessionCaptureQueueStatus();
   const hookErrors = lineCount(HOOK_ERROR_LOG);
   const reconcile = getMeta('last_reconcile');
   const reconcileError = getMeta('last_reconcile_error');
+  const reindexRefusal = getMeta('last_reindex_refusal');
 
   const warnings = [];
   // Both remedies are long-running and neither is free, so each says what it
@@ -1597,19 +2077,35 @@ export function getHealth({ recordBacklog = false } = {}) {
   const reindexAge = ageHours(reindex);
   if (reindexAge === null || reindexAge > STALE_AFTER.reindex) warnings.push(`reindex heartbeat ${reindexAge === null ? 'never recorded' : Math.round(reindexAge) + 'h old'} — check com.kb.reindex launchd job`);
   if (harvestAge === null || harvestAge > STALE_AFTER.harvest) warnings.push(`harvest ${harvestAge === null ? 'never ran' : Math.round(harvestAge) + 'h ago'} — check com.kb.harvest launchd job`);
+  if (harvestErrors > 0) warnings.push(`last harvest had ${harvestErrors} extraction error${harvestErrors === 1 ? '' : 's'} — check harvest.err; failed sessions remain queued for retry`);
+  if (captureQueue.failed > 0) warnings.push(`${captureQueue.failed} automatic session capture${captureQueue.failed === 1 ? '' : 's'} waiting on retry — check session-capture.log`);
+  else if (captureQueue.oldestOverdueMs > 5 * 60 * 1000) warnings.push(`${captureQueue.due} automatic session capture${captureQueue.due === 1 ? '' : 's'} overdue — check the resident KB daemon`);
   const synthAge = ageHours(synthesis);
   if (synthAge === null || synthAge > STALE_AFTER.synthesis) warnings.push(`synthesis ${synthAge === null ? 'never recorded' : Math.round(synthAge / 24) + 'd ago'} — check com.kb.synthesis launchd job`);
   const reconcileAge = ageHours(reconcile);
   if (reconcileAge === null || reconcileAge > STALE_AFTER.reconcile) warnings.push(`reconcile heartbeat ${reconcileAge === null ? 'never recorded' : Math.round(reconcileAge) + 'h old'} — check com.kb.reconcile launchd job`);
   if (reconcileError?.value) warnings.push(`reconcile last failed: ${reconcileError.value}`);
+  if (reindexRefusal?.value) {
+    try {
+      const refusal = JSON.parse(reindexRefusal.value);
+      warnings.push(
+        `vault reindex refused ${refusal.missing_count}/${refusal.existing_count} missing paths `
+        + `(${refusal.reason}) — review vault-index-safety.jsonl`
+      );
+    } catch {
+      warnings.push('vault reindex was refused — review vault-index-safety.jsonl');
+    }
+  }
 
   return {
     embeddings: `${embedded}/${docs}`,
     summaries: `${summarized}/${vaultFiles}`,
+    detached_documents: detached,
     last_reindex: reindex?.updated_at || null,
     last_harvest: lastHarvest,
     last_synthesis: synthesis?.updated_at || null,
     last_reconcile: reconcile?.updated_at || null,
+    session_capture_queue: captureQueue,
     ok: warnings.length === 0,
     warnings,
   };

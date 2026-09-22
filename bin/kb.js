@@ -3,10 +3,10 @@
 // One table drives dispatch, the command list, per-command help, and flag
 // validation, so a command cannot gain a flag that `--help` fails to mention.
 
+import '../src/env.js';
 import { lockPreferredNodeRuntime } from '../src/cli/runtime-node.js';
 import { acceptFlags, runEntryPoint, wantsHelp } from '../src/cli/flags.js';
 import { PENDING_EXIT } from '../src/schema.js';
-import 'dotenv/config';
 
 await lockPreferredNodeRuntime(import.meta.url);
 
@@ -24,7 +24,7 @@ const COMMANDS = {
   },
   mcp: {
     summary: 'Start MCP stdio server (used by AI tools)',
-    run: () => import('../src/mcp-supervisor.js').then(m => m.superviseMcpServer()),
+    run: () => import('../src/mcp.js').then(m => m.start()),
   },
   'mcp-shim': {
     summary: 'Connect this session to the resident `kb serve` daemon over stdio, falling back to in-process MCP when it is unreachable',
@@ -188,10 +188,6 @@ const COMMANDS = {
     summary: 'Connect existing docs via embedding neighbors (doc_links + Related sections)',
     run: () => import('../src/cli/link-backfill.js').then(m => m.linkBackfill()),
   },
-  'stale-servers': {
-    summary: 'List running MCP servers that started before the last src/ change',
-    run: () => import('../src/cli/stale-servers.js').then(m => m.runStaleServersCli()),
-  },
   'fold-inverses': {
     summary: 'Fold pre-existing facts onto one predicate and direction per relationship',
     boolean: ['--apply'],
@@ -270,8 +266,8 @@ const COMMANDS = {
   },
   setup: {
     summary: 'Interactive setup wizard (--auto for agent mode)',
-    boolean: ['--auto', '--no-load-jobs'],
-    valueEq: ['--port', '--host', '--password', '--vault', '--agents', '--deploy', '--brain', '--domain'],
+    boolean: ['--auto', '--no-load-jobs', '--load-jobs'],
+    valueEq: ['--port', '--host', '--password', '--vault', '--confirm-empty-vault', '--agents', '--deploy', '--brain', '--domain'],
     run: a => import('../src/cli/setup.js').then(m => m.setup(a)),
   },
   'safety-check': {
@@ -285,13 +281,27 @@ const COMMANDS = {
       if (!result.safe) process.exit(1);
     }),
   },
+  repair: {
+    summary: 'Plan, apply, or undo a deterministic document identity repair from an immutable backup',
+    args: 'identity',
+    boolean: ['--apply'],
+    valueEq: ['--backup', '--report', '--confirm', '--undo', '--batch-size'],
+    run: a => import('../src/cli/repair-cli.js').then(m => m.runRepairCli(a)),
+  },
   vault: {
-    summary: 'Reindex Obsidian vault (embeddings on; --no-embeddings to skip)',
-    args: 'reindex',
-    boolean: ['--no-embeddings'],
+    summary: 'Reindex the vault or explicitly purge detached rows after a grace period',
+    args: '<reindex | purge-detached>',
+    boolean: ['--no-embeddings', '--apply'],
+    valueEq: ['--confirm-prune', '--grace-days', '--confirm-purge', '--preview-token'],
     run: a => {
-      if (a[0] !== 'reindex') { console.error(usageFor('vault')); process.exit(2); }
-      return import('../src/cli/vault-cli.js').then(m => m.vaultReindex());
+      if (a[0] === 'reindex') {
+        return import('../src/cli/vault-cli.js').then(m => m.vaultReindex(a.slice(1)));
+      }
+      if (a[0] === 'purge-detached') {
+        return import('../src/cli/vault-cli.js').then(m => m.vaultPurgeDetached(a.slice(1)));
+      }
+      console.error(usageFor('vault'));
+      process.exit(2);
     },
   },
 };

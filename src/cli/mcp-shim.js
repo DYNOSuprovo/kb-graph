@@ -10,7 +10,7 @@
 // only restart recovery originates handshake replay and cache invalidations.
 //
 // If the daemon is unreachable or unresponsive at startup, this falls back
-// to the existing in-process supervisor path (`kb mcp`) so a session never
+// to the direct in-process stdio path (`kb mcp`) so a session never
 // loses its KB tools because the daemon happens to be down. Once connected,
 // a daemon loss keeps this stdio process alive, fails any interrupted calls
 // explicitly, and retries the socket until the resident service is back.
@@ -18,10 +18,23 @@ import { connect } from 'net';
 import { readFlagValue } from './flags.js';
 import { DAEMON_SOCKET_PATH } from '../daemon.js';
 import { AGENTS, resolveHarnessAncestry } from '../process-ancestry.js';
-import { encodeHello } from '../shim-hello.js';
-import { recordShimPath, recordShimRecovery } from '../shim-path-meter.js';
+import { encodeDaemonProbe, encodeHello, isDaemonReadyLine } from '../shim-hello.js';
+import {
+  SHIM_RECOVERY_STAGES,
+  recordShimPath,
+  recordShimRecovery,
+  recordShimRecoveryAttempt,
+} from '../shim-path-meter.js';
+import {
+  DEFAULT_RESTART_GRACE_TIMEOUT_MS,
+  DEFAULT_RESTART_MARKER_MAX_AGE_MS,
+  readRecentDaemonRestart,
+} from '../daemon-restart.js';
 
-const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+const DEFAULT_STARTUP_READINESS_TIMEOUT_MS = 8000;
+const DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS = 1000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 2000;
+const DEFAULT_RECOVERY_HANDSHAKE_TIMEOUT_MS = 30000;
 const DEFAULT_RECONNECT_DELAY_MS = 100;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 2000;
 const MAX_JSON_RPC_LINE_BYTES = 10 * 1024 * 1024;
@@ -31,7 +44,20 @@ const RECONNECTING_MESSAGE = 'knowledge-base daemon is reconnecting; retry the r
 // real-world deadline. Exported so that override is checkable directly
 // rather than by timing a real fallback against wall-clock, which is flaky
 // under a loaded test runner.
-export const PROBE_TIMEOUT_MS = Number(process.env.KB_SHIM_PROBE_TIMEOUT_MS) || DEFAULT_PROBE_TIMEOUT_MS;
+export const STARTUP_READINESS_TIMEOUT_MS = Number(
+  process.env.KB_SHIM_STARTUP_READINESS_TIMEOUT_MS ?? process.env.KB_SHIM_PROBE_TIMEOUT_MS,
+) || DEFAULT_STARTUP_READINESS_TIMEOUT_MS;
+export const PROBE_ATTEMPT_TIMEOUT_MS = Number(process.env.KB_SHIM_PROBE_ATTEMPT_TIMEOUT_MS)
+  || Math.min(DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS, STARTUP_READINESS_TIMEOUT_MS);
+export const CONNECT_TIMEOUT_MS = Number(process.env.KB_SHIM_CONNECT_TIMEOUT_MS) || DEFAULT_CONNECT_TIMEOUT_MS;
+export const RECOVERY_HANDSHAKE_TIMEOUT_MS = Number(process.env.KB_SHIM_RECOVERY_HANDSHAKE_TIMEOUT_MS)
+  || DEFAULT_RECOVERY_HANDSHAKE_TIMEOUT_MS;
+export const RESTART_GRACE_TIMEOUT_MS = Number(process.env.KB_SHIM_RESTART_GRACE_TIMEOUT_MS)
+  || DEFAULT_RESTART_GRACE_TIMEOUT_MS;
+export const RESTART_MARKER_MAX_AGE_MS = Number(process.env.KB_SHIM_RESTART_MARKER_MAX_AGE_MS)
+  || DEFAULT_RESTART_MARKER_MAX_AGE_MS;
+// Compatibility export for callers that only checked the old single deadline.
+export const PROBE_TIMEOUT_MS = STARTUP_READINESS_TIMEOUT_MS;
 export const RECONNECT_DELAY_MS = Number(process.env.KB_SHIM_RECONNECT_DELAY_MS) || DEFAULT_RECONNECT_DELAY_MS;
 export const RECONNECT_MAX_DELAY_MS = Number(process.env.KB_SHIM_RECONNECT_MAX_DELAY_MS)
   || DEFAULT_RECONNECT_MAX_DELAY_MS;
@@ -71,40 +97,98 @@ function probeInitializeLine() {
  * connect() and then never sends a byte, which without this would hang the
  * session tool-less instead of falling back.
  *
- * Costs one extra per-connection server instance on the daemon side — the
- * same cost `kb serve --status` already pays every time it runs (see
- * daemon.test.js / #96), proven cheap there.
+ * New daemons answer a private readiness preface before constructing an MCP
+ * server. The initialize line after it keeps the probe compatible with old
+ * daemons, which ignore the preface and answer the valid MCP request.
  *
  * @returns {Promise<'alive'|'unresponsive'|'unreachable'>}
  */
 function probeDaemonAlive(socketPath, timeoutMs) {
   return new Promise((resolve) => {
     const probe = connect(socketPath);
+    let buffer = '';
     let settled = false;
     let connected = false;
-    const finish = (state, errorCode = null) => {
+    const finish = (state, errorCode = null, protocol = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       probe.destroy();
-      resolve({ state, errorCode });
+      resolve({ state, errorCode, protocol });
     };
     const timer = setTimeout(() => finish(connected ? 'unresponsive' : 'unreachable', 'TIMEOUT'), timeoutMs);
     probe.once('connect', () => {
       connected = true;
+      // New daemons answer this without constructing a full MCP server.
+      // The initialize line preserves compatibility with old daemons, whose
+      // SDK ignores the probe line and answers the valid request after it.
+      probe.write(encodeDaemonProbe());
       probe.write(probeInitializeLine());
     });
-    // Liveness only — any bytes at all count. Parsing the response is the
-    // real connection's job.
-    probe.once('data', () => finish('alive'));
+    probe.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) return;
+      const line = buffer.slice(0, newline).replace(/\r$/, '');
+      finish('alive', null, isDaemonReadyLine(line) ? 'readiness_ack' : 'legacy_response');
+    });
     probe.once('error', (err) => finish('unreachable', err.code ?? null));
   });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function reconnectDelay(
+  attempts,
+  baseMs = RECONNECT_DELAY_MS,
+  maxMs = RECONNECT_MAX_DELAY_MS,
+  random = Math.random,
+) {
+  const ceiling = Math.min(baseMs * (2 ** Math.min(attempts - 1, 10)), maxMs);
+  // Clamp after jitter so the configured maximum remains a hard ceiling.
+  return Math.min(maxMs, Math.max(1, Math.round(ceiling * (0.75 + random() * 0.5))));
+}
+
+async function waitForDaemonReady(socketPath) {
+  const ordinaryDeadline = Date.now() + STARTUP_READINESS_TIMEOUT_MS;
+  let deadline = ordinaryDeadline;
+  let restartGraceUsed = false;
+  let attempts = 0;
+  let last = { state: 'unreachable', errorCode: null, protocol: null };
+  do {
+    const restartMarker = readRecentDaemonRestart(socketPath, { maxAgeMs: RESTART_MARKER_MAX_AGE_MS });
+    if (restartMarker) {
+      deadline = Math.max(deadline, restartMarker.startedAt + RESTART_GRACE_TIMEOUT_MS);
+    }
+    attempts++;
+    const remainingMs = Math.max(1, deadline - Date.now());
+    last = await probeDaemonAlive(socketPath, Math.min(PROBE_ATTEMPT_TIMEOUT_MS, remainingMs));
+    restartGraceUsed ||= deadline > ordinaryDeadline && Date.now() > ordinaryDeadline;
+    if (last.state === 'alive') return { ...last, attempts, restartGraceUsed };
+    const remainingAfterAttemptMs = deadline - Date.now();
+    if (remainingAfterAttemptMs <= 0) break;
+    await sleep(Math.min(reconnectDelay(attempts, 50, 250), remainingAfterAttemptMs));
+  } while (Date.now() < deadline);
+  return { ...last, attempts, restartGraceUsed };
 }
 
 const FALLBACK_REASONS = {
   unreachable: 'daemon unreachable',
   unresponsive: 'daemon unresponsive',
 };
+
+function fallbackMetricReason({ state, errorCode }) {
+  if (state === 'unresponsive') return 'readiness_timeout';
+  if (['ECONNREFUSED', 'ENOENT'].includes(errorCode)) return 'connection_refused';
+  if (errorCode === 'TIMEOUT') return 'connection_timeout';
+  return 'connection_error';
+}
+
+function daemonReadyMetricReason(liveness) {
+  if (liveness.restartGraceUsed) return 'cold_restart_ready';
+  if (liveness.attempts > 1) return 'cold_ready';
+  return liveness.protocol;
+}
 
 async function serveInProcess(reason, identity, { startedAt, metricReason = reason, errorCode = null }) {
   recordShimPath({
@@ -114,10 +198,10 @@ async function serveInProcess(reason, identity, { startedAt, metricReason = reas
     errorCode,
   });
   console.error(`kb mcp-shim: ${FALLBACK_REASONS[reason]}, serving in-process`);
-  const { superviseMcpServer } = await import('../mcp-supervisor.js');
-  // Owns process.stdin/stdout and its own exit handling from here on, same
-  // as running `kb mcp` directly.
-  superviseMcpServer({ childArgs: identity.agent ? [`--agent=${identity.agent}`] : [] });
+  const { start } = await import('../mcp.js');
+  // Owns process.stdin/stdout and its own exit handling from here on, same as
+  // running `kb mcp` directly. This is one process with no child server.
+  await start({ identity });
 }
 
 // Exits the process once anything queued on stdout has actually gone out —
@@ -125,8 +209,7 @@ async function serveInProcess(reason, identity, { startedAt, metricReason = reas
 // bytes the socket handed it. This only drains bytes the socket already
 // handed to us; it says nothing about daemon-side work still in flight for
 // the request that triggered the exit. That is by design: stdin closing is
-// the shutdown signal here, the same as `kb mcp`'s child being killed on its
-// own stdin EOF, not a request to wait for an answer.
+// the shutdown signal here, not a request to wait for an answer.
 function exitAfterFlush(code) {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));
@@ -144,8 +227,6 @@ const parse = (line) => {
 };
 
 const isRequest = (msg) => msg?.id !== undefined && msg?.method !== undefined;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 function onLines(stream, handle, onOverflow) {
   let tail = '';
   stream.setEncoding('utf8');
@@ -339,14 +420,30 @@ function relayThroughDaemon(initialSocket, { socketPath, identity }) {
     });
 
     while (recovery && !stdinEnded && !exiting) {
-      recovery.attempts++;
-      const opened = await openSocket(socketPath, PROBE_TIMEOUT_MS);
-      recovery.lastErrorCode = opened.errorCode;
+      const activeRecovery = recovery;
+      activeRecovery.attempts++;
+      const attemptStartedAt = Date.now();
+      const opened = await openSocket(socketPath, CONNECT_TIMEOUT_MS);
+      if (recovery !== activeRecovery || stdinEnded || exiting) {
+        opened.socket?.destroy();
+        return;
+      }
+      activeRecovery.lastErrorCode = opened.errorCode;
+      let failureStage = SHIM_RECOVERY_STAGES.CONNECT;
       if (opened.socket) {
-        const replayed = await replayHandshake(opened.socket, handshake, identity, PROBE_TIMEOUT_MS);
-        recovery.lastErrorCode = replayed.errorCode;
-        if (replayed.ok && recovery && !stdinEnded && !exiting) {
-          const completed = recovery;
+        const replayed = await replayHandshake(
+          opened.socket,
+          handshake,
+          identity,
+          RECOVERY_HANDSHAKE_TIMEOUT_MS,
+        );
+        if (recovery !== activeRecovery || stdinEnded || exiting) {
+          opened.socket.destroy();
+          return;
+        }
+        activeRecovery.lastErrorCode = replayed.errorCode;
+        if (replayed.ok) {
+          const completed = activeRecovery;
           recovery = null;
           attachSocket(opened.socket);
           recordShimRecovery({
@@ -363,12 +460,16 @@ function relayThroughDaemon(initialSocket, { socketPath, identity }) {
           send({ jsonrpc: '2.0', method: 'notifications/resources/list_changed' });
           return;
         }
+        failureStage = SHIM_RECOVERY_STAGES.HANDSHAKE;
       }
-      const delayMs = Math.min(
-        RECONNECT_DELAY_MS * (2 ** Math.min(recovery.attempts - 1, 10)),
-        RECONNECT_MAX_DELAY_MS,
-      );
-      await sleep(delayMs);
+      recordShimRecoveryAttempt({
+        recoveryId: activeRecovery.id,
+        attempt: activeRecovery.attempts,
+        stage: failureStage,
+        durationMs: Date.now() - attemptStartedAt,
+        errorCode: activeRecovery.lastErrorCode,
+      });
+      await sleep(reconnectDelay(activeRecovery.attempts));
     }
   };
 
@@ -416,15 +517,21 @@ export async function runMcpShimCli(args) {
   const socketPath = socketPathFrom(args);
   const identity = identityFrom(args);
 
-  const liveness = await probeDaemonAlive(socketPath, PROBE_TIMEOUT_MS);
+  const liveness = await waitForDaemonReady(socketPath);
   if (liveness.state !== 'alive') {
-    return serveInProcess(liveness.state, identity, { startedAt, errorCode: liveness.errorCode });
+    return serveInProcess(liveness.state, identity, {
+      startedAt,
+      metricReason: liveness.restartGraceUsed
+        ? 'restart_readiness_timeout'
+        : fallbackMetricReason(liveness),
+      errorCode: liveness.errorCode,
+    });
   }
 
   // The real connect is bounded too. The liveness probe and this connection
   // are separate by design because the probe's synthetic initialize must
   // never become part of the client's session.
-  const connection = await openSocket(socketPath, PROBE_TIMEOUT_MS);
+  const connection = await openSocket(socketPath, CONNECT_TIMEOUT_MS);
   if (!connection.socket) {
     // The probe just proved the daemon alive; a connect failing this soon
     // after means it died in the gap above.
@@ -450,7 +557,7 @@ export async function runMcpShimCli(args) {
   // node_modules, pinned by tests/shim-hello.test.js.
   recordShimPath({
     path: 'daemon',
-    reason: 'probe_alive',
+    reason: daemonReadyMetricReason(liveness),
     durationMs: Date.now() - startedAt,
   });
   const socket = connection.socket;

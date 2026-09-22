@@ -1,16 +1,23 @@
 import { createInterface } from 'readline';
 import { randomBytes } from 'crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir, platform, release, type as osType } from 'os';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
+import Database from 'better-sqlite3';
 import { SUPPORTED_AGENTS, registerAgents } from './mcp-register.js';
 import { HOOK_FILES, PUSH_AGENTS, installAgentHooks } from './setup-hooks.js';
-import { installJobs } from './setup-jobs.js';
+import {
+  installJobs, systemdEscape, systemdExecWord, xmlEscape,
+} from './setup-jobs.js';
+import { installBundledSkills } from './setup-skills.js';
 import { stableNodePath } from './runtime-node.js';
 import { writePrivateFile } from '../private-file.js';
 import { askHidden } from '../secret-prompt.js';
+import { DEFAULT_KB_DIR } from '../env.js';
+import { DB_PATH, KB_DIR } from '../paths.js';
+import { scanVault } from '../vault/indexer.js';
 import {
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
@@ -20,6 +27,7 @@ import {
 } from '../http-bind.js';
 
 const HOME = homedir();
+const API_KEY_PREFIX = 'KB_API_KEY_';
 // fileURLToPath handles Windows drive letters correctly (avoids C:\C:\ duplication)
 const PROJECT_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
 
@@ -52,6 +60,90 @@ function detectVaultPath() {
   return null;
 }
 
+export class SetupVaultSafetyError extends Error {
+  constructor({ candidatePath, documentCount }) {
+    const candidate = candidatePath || 'none';
+    super(
+      `Refusing to repoint a populated knowledge base (${documentCount} documents) `
+      + `to an empty vault candidate (${candidate}). In automatic mode, supply `
+      + `--vault=${candidate} and --confirm-empty-vault=${candidate} together.`
+    );
+    this.name = 'SetupVaultSafetyError';
+    this.code = 'KB_SETUP_EMPTY_VAULT_REFUSED';
+  }
+}
+
+export function countStoredDocuments(dbPath = DB_PATH) {
+  if (!existsSync(dbPath)) return 0;
+  const database = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const hasDocuments = database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
+    ).get();
+    return hasDocuments
+      ? database.prepare('SELECT COUNT(*) AS count FROM documents').get().count
+      : 0;
+  } finally {
+    database.close();
+  }
+}
+
+function markdownCount(vaultPath) {
+  if (!vaultPath || !existsSync(vaultPath)) return 0;
+  return scanVault(vaultPath).length;
+}
+
+export function assertSafeVaultSelection({
+  candidatePath,
+  priorPath,
+  explicitVault,
+  confirmation,
+  documentCount = countStoredDocuments(),
+  candidateMarkdownCount = markdownCount(candidatePath),
+}) {
+  const sameAsPrior = candidatePath && priorPath
+    && resolve(candidatePath) === resolve(priorPath);
+  if (documentCount === 0 || candidateMarkdownCount > 0 || sameAsPrior) return;
+
+  const expected = candidatePath ? resolve(candidatePath) : 'none';
+  const confirmed = confirmation === 'none' ? 'none' : confirmation && resolve(confirmation);
+  if (!explicitVault || confirmed !== expected) {
+    throw new SetupVaultSafetyError({ candidatePath, documentCount });
+  }
+}
+
+export function setupJobPolicy(args, {
+  kbDir = KB_DIR,
+  defaultKbDir = DEFAULT_KB_DIR,
+} = {}) {
+  const loadRequested = args.includes('--load-jobs');
+  const noLoadRequested = args.includes('--no-load-jobs');
+  if (loadRequested && noLoadRequested) {
+    throw new Error('--load-jobs and --no-load-jobs cannot be used together');
+  }
+  const customKbDir = resolve(kbDir) !== resolve(defaultKbDir);
+  if (customKbDir) {
+    if (loadRequested) {
+      throw new Error('--load-jobs is refused for a custom KB_DIR; install its scheduler explicitly');
+    }
+    return { installJobs: noLoadRequested, loadJobs: false };
+  }
+  return { installJobs: true, loadJobs: !noLoadRequested };
+}
+
+export function assertSafeServiceSelection(deploy, {
+  kbDir = KB_DIR,
+  defaultKbDir = DEFAULT_KB_DIR,
+} = {}) {
+  const customKbDir = resolve(kbDir) !== resolve(defaultKbDir);
+  if (customKbDir && ['launchd', 'systemd'].includes(deploy)) {
+    throw new Error(
+      `${deploy} service installation is refused for a custom KB_DIR; `
+      + 'use manual mode and install the service explicitly'
+    );
+  }
+}
+
 // Parse KEY=value lines from a .env file; ignores comments and blanks.
 export function parseEnvFile(content) {
   const out = {};
@@ -62,11 +154,31 @@ export function parseEnvFile(content) {
   return out;
 }
 
-// Read the existing .env so re-running setup preserves secrets instead of rotating them.
-function loadExistingEnv() {
-  const envPath = join(PROJECT_ROOT, '.env');
-  if (!existsSync(envPath)) return {};
-  return parseEnvFile(readFileSync(envPath, 'utf8'));
+function readEnvFile(path) {
+  if (!existsSync(path)) return {};
+  return parseEnvFile(readFileSync(path, 'utf8'));
+}
+
+// New installs keep mutable state outside the checkout/package. Merge the
+// legacy checkout file first so re-running setup migrates without rotating
+// secrets, while an existing durable value wins.
+export function loadExistingEnv({
+  statePath = join(KB_DIR, '.env'),
+  legacyPath = join(PROJECT_ROOT, '.env'),
+} = {}) {
+  return { ...readEnvFile(legacyPath), ...readEnvFile(statePath) };
+}
+
+function apiKeysFromEnv(env) {
+  return Object.fromEntries(
+    Object.entries(env)
+      .filter(([key]) => key.startsWith(API_KEY_PREFIX))
+      .map(([key, value]) => [key.slice(API_KEY_PREFIX.length).toLowerCase(), value]),
+  );
+}
+
+function apiKeyEnvName(agent) {
+  return `${API_KEY_PREFIX}${agent.toUpperCase()}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +262,7 @@ function detectEnvironment() {
 export function buildEnvContent(cfg) {
   const host = resolveHttpHost(cfg.host);
   const port = resolveHttpPort(cfg.port);
+  const agents = cfg.agents || [];
   const lines = [
     '# Knowledge Base Server Configuration',
     `# Generated by setup wizard on ${new Date().toISOString()}`,
@@ -179,10 +292,14 @@ export function buildEnvContent(cfg) {
   ];
 
   // API keys per agent
-  if (cfg.agents && cfg.agents.length > 0) {
+  const apiKeyAgents = [
+    ...agents,
+    ...Object.keys(cfg.apiKeys || {}).filter(agent => !agents.includes(agent)),
+  ];
+  if (apiKeyAgents.length > 0) {
     lines.push('# Brain API keys — one per AI agent');
-    for (const agent of cfg.agents) {
-      const envName = `KB_API_KEY_${agent.toUpperCase()}`;
+    for (const agent of apiKeyAgents) {
+      const envName = apiKeyEnvName(agent);
       const key = cfg.apiKeys?.[agent] || genHex();
       lines.push(`${envName}=${key}`);
     }
@@ -207,23 +324,32 @@ export function buildEnvContent(cfg) {
 // Service installation helpers
 // ---------------------------------------------------------------------------
 
-function installSystemd() {
-  const unit = `[Unit]
+export function systemdServiceContent({
+  kbDir = KB_DIR,
+  nodeBin = stableNodePath(),
+  projectRoot = PROJECT_ROOT,
+} = {}) {
+  return `[Unit]
 Description=Knowledge Base Server
 After=network.target
 
 [Service]
 Type=simple
 User=${process.env.USER || 'root'}
-WorkingDirectory=${PROJECT_ROOT}
-ExecStart=${stableNodePath()} ${join(PROJECT_ROOT, 'bin', 'kb.js')} start
+WorkingDirectory=${systemdExecWord(projectRoot)}
+ExecStart=${systemdExecWord(nodeBin)} ${systemdExecWord(join(projectRoot, 'bin', 'kb.js'))} start
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+Environment="KB_DIR=${systemdEscape(kbDir)}"
 
 [Install]
 WantedBy=multi-user.target
 `;
+}
+
+function installSystemd() {
+  const unit = systemdServiceContent();
   const unitPath = '/etc/systemd/system/knowledge-base.service';
   try {
     writeFileSync(unitPath, unit);
@@ -235,8 +361,12 @@ WantedBy=multi-user.target
   }
 }
 
-function installLaunchd() {
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+export function launchdServiceContent({
+  kbDir = KB_DIR,
+  nodeBin = stableNodePath(),
+  projectRoot = PROJECT_ROOT,
+} = {}) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -244,19 +374,28 @@ function installLaunchd() {
   <string>com.knowledgebase.server</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${stableNodePath()}</string>
-    <string>${join(PROJECT_ROOT, 'bin', 'kb.js')}</string>
+    <string>${xmlEscape(nodeBin)}</string>
+    <string>${xmlEscape(join(projectRoot, 'bin', 'kb.js'))}</string>
     <string>start</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${PROJECT_ROOT}</string>
+  <string>${xmlEscape(projectRoot)}</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KB_DIR</key>
+    <string>${xmlEscape(kbDir)}</string>
+  </dict>
 </dict>
 </plist>
 `;
+}
+
+function installLaunchd() {
+  const plist = launchdServiceContent();
   const plistPath = join(HOME, 'Library', 'LaunchAgents', 'com.knowledgebase.server.plist');
   try {
     mkdirSync(join(HOME, 'Library', 'LaunchAgents'), { recursive: true });
@@ -278,7 +417,7 @@ services:
       - kb-data:/root/.knowledge-base
 ${cfg.vaultPath ? `      - ${cfg.vaultPath}:/vault` : ''}
     env_file:
-      - .env
+      - ${JSON.stringify(join(KB_DIR, '.env'))}
     environment:
       KB_HOST: 0.0.0.0
     restart: unless-stopped
@@ -309,6 +448,9 @@ export function parseAutoArgs(args) {
       else if (key === 'host') cfg.host = resolveHttpHost(val);
       else if (key === 'password') cfg.password = val;
       else if (key === 'vault') cfg.vaultPath = val === 'none' ? '' : resolve(val.replace(/^~/, HOME));
+      else if (key === 'confirm-empty-vault') {
+        cfg.confirmEmptyVault = val === 'none' ? 'none' : resolve(val.replace(/^~/, HOME));
+      }
       else if (key === 'agents') cfg.agents = val.split(',').map(s => s.trim().toLowerCase());
       else if (key === 'deploy') cfg.deploy = val;
       else if (key === 'brain') cfg.brainApi = val === 'true' || val === 'yes';
@@ -318,12 +460,25 @@ export function parseAutoArgs(args) {
   return cfg;
 }
 
+function resolveVaultPath(configuredPath, priorPath) {
+  if (typeof configuredPath === 'string' && configuredPath) {
+    return resolve(configuredPath.replace(/^~/, HOME));
+  }
+  if (configuredPath !== undefined) return configuredPath;
+  return priorPath || detectVaultPath() || join(HOME, 'kb-vault');
+}
+
 function loadConfigFile() {
-  const configPath = join(PROJECT_ROOT, 'setup-config.json');
-  if (!existsSync(configPath)) return null;
-  try {
-    return JSON.parse(readFileSync(configPath, 'utf-8'));
-  } catch { return null; }
+  for (const configPath of [
+    join(KB_DIR, 'setup-config.json'),
+    join(PROJECT_ROOT, 'setup-config.json'),
+  ]) {
+    if (!existsSync(configPath)) continue;
+    try {
+      return JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch { return null; }
+  }
+  return null;
 }
 
 export function writeSetupEnv(path, content) {
@@ -412,6 +567,25 @@ async function runInteractive(env) {
   outln('  Enter a path (created if missing), or "none" to skip.');
   const vaultAnswer = await ask(rl, 'Vault path', vaultDefault);
   cfg.vaultPath = vaultAnswer === 'none' ? '' : resolve(vaultAnswer.replace(/^~/, HOME));
+  try {
+    assertSafeVaultSelection({
+      candidatePath: cfg.vaultPath,
+      priorPath: prior.OBSIDIAN_VAULT_PATH,
+      explicitVault: false,
+      confirmation: null,
+    });
+  } catch (error) {
+    if (!(error instanceof SetupVaultSafetyError)) throw error;
+    const expected = cfg.vaultPath || 'none';
+    outln(`  ${error.message}`);
+    const confirmation = await ask(rl, `Type "${expected}" to confirm this empty vault`, '');
+    assertSafeVaultSelection({
+      candidatePath: cfg.vaultPath,
+      priorPath: prior.OBSIDIAN_VAULT_PATH,
+      explicitVault: true,
+      confirmation,
+    });
+  }
 
   // 6. AI agents
   outln();
@@ -421,9 +595,9 @@ async function runInteractive(env) {
   const agentChoices = agentKeys.map(k => AGENT_LABELS[k]);
   const selected = await askMulti(rl, 'Select agents (comma-separated numbers, or A for all)', agentChoices);
   cfg.agents = selected.map(i => agentKeys[i]);
-  cfg.apiKeys = {};
+  cfg.apiKeys = apiKeysFromEnv(prior);
   for (const agent of cfg.agents) {
-    cfg.apiKeys[agent] = prior[`KB_API_KEY_${agent.toUpperCase()}`] || genHex();
+    cfg.apiKeys[agent] = prior[apiKeyEnvName(agent)] || genHex();
   }
 
   // 7. Deployment mode
@@ -431,7 +605,7 @@ async function runInteractive(env) {
   const deployKeys = [];
   if (platform() === 'linux') { deployChoices.push('systemd (auto-start on boot)'); deployKeys.push('systemd'); }
   if (platform() === 'darwin') { deployChoices.push('launchd (auto-start on boot)'); deployKeys.push('launchd'); }
-  deployChoices.push('Docker (docker-compose)');
+  deployChoices.push('Docker Compose (source checkout; requires Dockerfile)');
   deployKeys.push('docker');
   deployChoices.push('PM2 (process manager)');
   deployKeys.push('pm2');
@@ -463,13 +637,14 @@ async function runInteractive(env) {
 // Apply configuration
 // ---------------------------------------------------------------------------
 
-export function registerSetupAgent(agent, {
+export function registerSetupAgents(agents, {
   homeDir = HOME,
   cwd = process.cwd(),
   register = registerAgents,
 } = {}) {
   try {
-    return register([agent], homeDir, { cwd }).map(result => {
+    return register(agents, homeDir, { cwd }).map(result => {
+      const { agent } = result;
       // A hand-managed config (Codex's config.toml) and a refused move are
       // both "not registered" — reporting either as a write is how a setup
       // run ends believing it wired something it did not.
@@ -490,8 +665,12 @@ export function registerSetupAgent(agent, {
       return { action: `Registered MCP for ${agent}`, path: result.path };
     });
   } catch (err) {
-    return [{ action: `Failed to register MCP for ${agent}`, error: err.message }];
+    return [{ action: 'Failed to register MCP clients', error: err.message }];
   }
+}
+
+export function registerSetupAgent(agent, options = {}) {
+  return registerSetupAgents([agent], options);
 }
 
 function applyConfig(cfg) {
@@ -516,7 +695,7 @@ function applyConfig(cfg) {
 
   // 1. Write .env
   const envContent = buildEnvContent(cfg);
-  const envPath = join(PROJECT_ROOT, '.env');
+  const envPath = join(KB_DIR, '.env');
   const envExisted = existsSync(envPath);
   writeSetupEnv(envPath, envContent);
   results.steps.push({
@@ -524,10 +703,11 @@ function applyConfig(cfg) {
     path: envPath,
   });
 
-  // 2. Register MCP for each agent that has a config we can write
-  for (const agent of (cfg.agents || [])) {
-    if (!SUPPORTED_AGENTS.includes(agent)) continue;
-    results.steps.push(...registerSetupAgent(agent));
+  // 2. Register every owned MCP config in one batch so a late target failure
+  // rolls back earlier clients from this setup run.
+  const registrationAgents = (cfg.agents || []).filter(agent => SUPPORTED_AGENTS.includes(agent));
+  if (registrationAgents.length > 0) {
+    results.steps.push(...registerSetupAgents(registrationAgents));
   }
 
   // 3. Install service
@@ -564,7 +744,13 @@ function applyConfig(cfg) {
     if (!HOOK_FILES[agent]) continue;
     const label = AGENT_LABELS[agent] || agent;
     try {
-      const r = installAgentHooks({ home: HOME, agent, nodeBin: stableNodePath(), kbJsPath: join(PROJECT_ROOT, 'bin', 'kb.js') });
+      const r = installAgentHooks({
+        home: HOME,
+        agent,
+        nodeBin: stableNodePath(),
+        kbJsPath: join(PROJECT_ROOT, 'bin', 'kb.js'),
+        kbDir: KB_DIR,
+      });
       results.steps.push({ action: `Installed ${label} hooks (${PUSH_AGENTS.includes(agent) ? 'briefing + hints' : 'briefing'})`, path: r.path });
       if (r.backup) results.steps.push({ action: `Backed up prior ${label} hook config`, path: r.backup });
     } catch (err) {
@@ -575,30 +761,25 @@ function applyConfig(cfg) {
   // 5. Scheduled jobs: nightly harvest, reindex, weekly synthesis
   let claudePath = null;
   try { claudePath = execFileSync('which', ['claude']).toString().trim(); } catch { /* optional */ }
-  const jobs = installJobs({
-    home: HOME, nodeBin: stableNodePath(), kbRoot: PROJECT_ROOT,
-    vaultPath: cfg.vaultPath, claudePath, load: cfg.loadJobs !== false,
-  });
-  results.steps.push(...jobs.steps);
-  if (!claudePath) results.steps.push({ action: 'claude CLI not found — nightly harvest needs it; install Claude Code and re-run setup', error: 'CLAUDE_PATH unset' });
+  if (cfg.installJobs !== false) {
+    const jobs = installJobs({
+      home: HOME, nodeBin: stableNodePath(), kbRoot: PROJECT_ROOT,
+      vaultPath: cfg.vaultPath, claudePath, load: cfg.loadJobs !== false, kbDir: KB_DIR,
+    });
+    results.steps.push(...jobs.steps);
+    if (!claudePath) results.steps.push({ action: 'claude CLI not found — nightly harvest needs it; install Claude Code and re-run setup', error: 'CLAUDE_PATH unset' });
+  } else {
+    results.steps.push({
+      action: 'Skipped scheduled jobs for custom KB_DIR',
+      hint: 'Re-run with --load-jobs or --no-load-jobs to choose explicitly.',
+    });
+  }
 
-  // 6. Bundled skills — never overwrite a skill the user already has (customizations win)
+  // 6. Bundled skills — never overwrite a skill the user already has.
   try {
-    for (const name of readdirSync(join(PROJECT_ROOT, 'skills'))) {
-      const skillDest = join(HOME, '.claude', 'skills', name);
-      try {
-        if (existsSync(skillDest)) {
-          results.steps.push({ action: `Skill ${name} already present — left untouched`, path: skillDest });
-          continue;
-        }
-        cpSync(join(PROJECT_ROOT, 'skills', name), skillDest, { recursive: true });
-        results.steps.push({ action: `Installed ${name} skill`, path: skillDest });
-      } catch (err) {
-        results.steps.push({ action: `Failed to install ${name} skill`, error: err.message });
-      }
-    }
+    results.steps.push(...installBundledSkills({ home: HOME, projectRoot: PROJECT_ROOT }));
   } catch (err) {
-    results.steps.push({ action: 'Failed to read bundled skills directory', error: err.message });
+    results.steps.push({ action: 'Failed to install bundled skills', error: err.message });
   }
 
   // 7. First ingest if vault provided
@@ -635,7 +816,7 @@ export function formatSetupSummary(results) {
   lines.push('  Configuration summary:');
   lines.push(`    Bind host:   ${cfg.host || DEFAULT_HTTP_HOST}`);
   lines.push(`    Port:        ${cfg.port}`);
-  lines.push('    Credentials: stored in .env');
+  lines.push(`    Credentials: stored in ${join(KB_DIR, '.env')}`);
   lines.push(`    Vault:       ${cfg.vaultPath || '(none)'}`);
   lines.push(`    Agents:      ${(cfg.agents || []).join(', ') || '(none)'}`);
   lines.push(`    Deploy:      ${cfg.deploy || 'manual'}`);
@@ -691,6 +872,7 @@ export async function setup(args = []) {
       prior.KB_PORT,
       error => outln(`Warning: ${error.message}; resetting to ${DEFAULT_HTTP_PORT}.`),
     );
+    const jobPolicy = setupJobPolicy(args);
     const cfg = {
       port: merged.port ?? priorPort,
       host: merged.host || priorHost,
@@ -698,22 +880,27 @@ export async function setup(args = []) {
       // A non-empty vaultPath (from setup-config.json or --vault) gets the same
       // tilde/relative resolution the flag and interactive paths apply; '' keeps
       // the `--vault=none` skip-vault semantics.
-      vaultPath: (typeof merged.vaultPath === 'string' && merged.vaultPath)
-        ? resolve(merged.vaultPath.replace(/^~/, HOME))
-        : (merged.vaultPath !== undefined ? merged.vaultPath
-          : (prior.OBSIDIAN_VAULT_PATH || detectVaultPath() || join(HOME, 'kb-vault'))),
+      vaultPath: resolveVaultPath(merged.vaultPath, prior.OBSIDIAN_VAULT_PATH),
       agents: merged.agents || Object.keys(env.tools).filter(k => env.tools[k].available),
       deploy: merged.deploy || 'manual',
       brainApi: merged.brainApi || false,
       brainDomain: merged.brainDomain || 'brain.yourdomain.com',
       authSecret: merged.authSecret || prior.BETTER_AUTH_SECRET || genBase64(),
-      apiKeys: {},
-      loadJobs: !args.includes('--no-load-jobs'),
+      apiKeys: apiKeysFromEnv(prior),
+      ...jobPolicy,
     };
+
+    assertSafeVaultSelection({
+      candidatePath: cfg.vaultPath,
+      priorPath: prior.OBSIDIAN_VAULT_PATH,
+      explicitVault: args.some(arg => arg.startsWith('--vault=')),
+      confirmation: cliConfig.confirmEmptyVault,
+    });
+    assertSafeServiceSelection(cfg.deploy);
 
     // Generate API keys for each agent, reusing prior keys so registered agents keep working.
     for (const agent of cfg.agents) {
-      cfg.apiKeys[agent] = merged.apiKeys?.[agent] || prior[`KB_API_KEY_${agent.toUpperCase()}`] || genHex();
+      cfg.apiKeys[agent] = merged.apiKeys?.[agent] || cfg.apiKeys[agent] || genHex();
     }
 
     outln('Knowledge Base Server — automatic setup');
@@ -726,6 +913,8 @@ export async function setup(args = []) {
 
   // Interactive mode
   const cfg = await runInteractive(env);
+  Object.assign(cfg, setupJobPolicy(args));
+  assertSafeServiceSelection(cfg.deploy);
   const results = applyConfig(cfg);
   printSummary(results);
 }

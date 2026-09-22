@@ -222,7 +222,12 @@ describe('the index does not trust the file', () => {
 
 describe('kb_promote', () => {
   const promote = (args) => call('kb_promote', args);
-  beforeEach(() => getDb().exec('DELETE FROM embeddings; DELETE FROM documents'));
+  beforeEach(() => getDb().exec(`
+    DELETE FROM embeddings;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `));
 
   it('raises a tier and records what confirmed it', async () => {
     const doc = await insertEmbeddedDocument({ title: 'A guess about the queue', content: 'Guessed.', doc_type: 'lesson' });

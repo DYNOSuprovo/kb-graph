@@ -61,7 +61,10 @@ export function revetAliases(doc) {
   const rows = db.prepare(`
     SELECT vf.vault_path, vf.document_id, d.title, d.tags, d.content, d.aliases
     FROM vault_files vf JOIN documents d ON d.id = vf.document_id
-    WHERE d.superseded_at IS NULL AND d.doc_type != 'archive'
+    WHERE vf.missing_at IS NULL
+      AND d.detached_at IS NULL
+      AND d.superseded_at IS NULL
+      AND d.doc_type != 'archive'
       ${doc === undefined ? '' : 'AND vf.document_id = ?'}
     ORDER BY vf.document_id
   `).all(...(doc === undefined ? [] : [doc]));
@@ -108,7 +111,10 @@ export async function runAliasesBackfillCli(args = []) {
   const rows = getDb().prepare(`
     SELECT vf.vault_path, vf.document_id, d.title, d.tags
     FROM vault_files vf JOIN documents d ON d.id = vf.document_id
-    WHERE d.superseded_at IS NULL AND d.doc_type != 'archive'
+    WHERE vf.missing_at IS NULL
+      AND d.detached_at IS NULL
+      AND d.superseded_at IS NULL
+      AND d.doc_type != 'archive'
       ${doc === undefined ? '' : 'AND d.id = ?'}
     ORDER BY vf.document_id
   `).all(...(doc === undefined ? [] : [doc]));

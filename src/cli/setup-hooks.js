@@ -17,11 +17,12 @@ export const HOOK_FILES = {
 
 // Cursor's hooks.json differs in shape, not just path: camelCase event
 // names, flat `{command}` entries instead of `{hooks:[{type,command}]}`,
-// and a top-level `version`. Only sessionStart has a verified payload and
-// context contract here: beforeSubmitPrompt cannot inject context, and
-// lifecycle capture stays off until a native session-end fixture pins its
-// identity fields.
+// and a top-level `version`. sessionStart supplies briefing context. Native
+// Desktop stop and preCompact supply the verified primary transcript identity
+// used by default-off capture; sessionEnd is deliberately excluded because
+// Cursor 3.21.16 emits it only during window teardown, without a usable path.
 export const PUSH_AGENTS = [AGENT.CLAUDE, AGENT.CODEX];
+const CAPTURE_AGENTS = [...PUSH_AGENTS, AGENT.CURSOR];
 
 function hookFilePath(agent, home = homedir()) {
   const parts = HOOK_FILES[agent];
@@ -68,10 +69,11 @@ const HOOK_SPECS = [
   },
   {
     event: 'PreCompact',
+    eventName: { [AGENT.CURSOR]: 'preCompact' },
     matcher: { [AGENT.CLAUDE]: 'manual|auto', [AGENT.CODEX]: null },
     subcommand: 'session-capture-hook',
     extraArgs: ['--reason=precompact'],
-    agents: PUSH_AGENTS,
+    agents: CAPTURE_AGENTS,
   },
   {
     event: 'SessionEnd',
@@ -82,10 +84,11 @@ const HOOK_SPECS = [
   },
   {
     event: 'Stop',
+    eventName: { [AGENT.CURSOR]: 'stop' },
     matcher: null,
     subcommand: 'session-capture-hook',
     extraArgs: ['--reason=activity'],
-    agents: [AGENT.CODEX],
+    agents: [AGENT.CODEX, AGENT.CURSOR],
   },
   {
     event: 'SessionStart',
@@ -123,13 +126,20 @@ const agentSuffix = (agent) => agent === AGENT.CLAUDE ? '' : ` ${AGENT_FLAG} ${a
 // any hook code can fail open. KB hooks do not depend on host-level Node
 // instrumentation, so run them with an explicitly clean option set.
 const HOOK_ENV_PREFIX = 'env NODE_OPTIONS= ';
+const shellQuote = value => `'${String(value).replaceAll("'", "'\"'\"'")}'`;
+const shellWord = value => /^[A-Za-z0-9_./:@%+=,-]+$/.test(String(value))
+  ? String(value)
+  : shellQuote(value);
 
-const commandFor = (spec, { nodeBin, kbJsPath, agent }) => {
+const commandFor = (spec, {
+  nodeBin, kbJsPath, agent, kbDir,
+}) => {
   const target = spec.script
-    ? join(dirname(kbJsPath), spec.script)
-    : `${kbJsPath} ${spec.subcommand}`;
-  const extraArgs = spec.extraArgs?.length ? ` ${spec.extraArgs.join(' ')}` : '';
-  return `${HOOK_ENV_PREFIX}${nodeBin} ${target}${extraArgs}${agentSuffix(agent)}`;
+    ? [join(dirname(kbJsPath), spec.script)]
+    : [kbJsPath, spec.subcommand];
+  const args = [...target, ...(spec.extraArgs ?? [])].map(shellWord).join(' ');
+  const kbDirEnv = kbDir ? `KB_DIR=${shellQuote(kbDir)} ` : '';
+  return `${HOOK_ENV_PREFIX}${kbDirEnv}${shellWord(nodeBin)} ${args}${agentSuffix(agent)}`;
 };
 
 // The agent a command was installed for, read the same way readAgentFlag
@@ -153,10 +163,10 @@ const identifies = (spec, command, agent) => {
   const cmd = command ?? '';
   if (agentOf(cmd) !== agent) return false;
   const base = cmd.replace(AGENT_IN_COMMAND, '').trimEnd();
-  if (spec.script && new RegExp(`(?:^|/)${spec.script.replaceAll('.', '\\.')}(?:\\s|$)`).test(base)) return true;
+  if (spec.script && new RegExp(`(?:^|/)${spec.script.replaceAll('.', '\\.')}'?(?:\\s|$)`).test(base)) return true;
   if (
     spec.subcommand
-    && new RegExp(`(?:^|/)kb\\.js\\s+${spec.subcommand.replaceAll('.', '\\.')}(?:\\s|$)`).test(base)
+    && new RegExp(`(?:^|/)kb\\.js'?\\s+${spec.subcommand.replaceAll('.', '\\.')}(?:\\s|$)`).test(base)
   ) return true;
   return false;
 };
@@ -175,7 +185,9 @@ const clearsNodeOptions = (command) => command.startsWith(HOOK_ENV_PREFIX);
 // Pure merge: dedup by the spec's own identity so re-runs and prior manual
 // installs never duplicate. Direct-Node installs are replaced: they inherit
 // the host's NODE_OPTIONS and can die before the hook's fail-open code loads.
-export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLAUDE }) {
+export function mergeAgentHooks(settings, {
+  nodeBin, kbJsPath, agent = AGENT.CLAUDE, kbDir,
+}) {
   const next = structuredClone(settings ?? {});
   next.hooks = next.hooks ?? {};
   const flat = agent === AGENT.CURSOR;
@@ -184,7 +196,9 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
     if (!spec.agents.includes(agent)) continue;
     const event = eventFor(spec, agent);
     const entries = (next.hooks[event] = next.hooks[event] ?? []);
-    const replacement = commandFor(spec, { nodeBin, kbJsPath, agent });
+    const replacement = commandFor(spec, {
+      nodeBin, kbJsPath, agent, kbDir,
+    });
     const matcher = matcherFor(spec, agent);
     const currentInstalls = entries.flatMap(group =>
       (flat ? [group] : (group.hooks ?? []))
@@ -246,7 +260,9 @@ export function mergeAgentHooks(settings, { nodeBin, kbJsPath, agent = AGENT.CLA
   return next;
 }
 
-export function installAgentHooks({ home, nodeBin, kbJsPath, agent = AGENT.CLAUDE }) {
+export function installAgentHooks({
+  home, nodeBin, kbJsPath, agent = AGENT.CLAUDE, kbDir,
+}) {
   const path = hookFilePath(agent, home);
   mkdirSync(dirname(path), { recursive: true });
   let settings = {};
@@ -261,7 +277,12 @@ export function installAgentHooks({ home, nodeBin, kbJsPath, agent = AGENT.CLAUD
     backup = `${path}.kb-backup`;
     copyFileSync(path, backup);
   }
-  const json = JSON.stringify(mergeAgentHooks(settings, { nodeBin, kbJsPath, agent }), null, 2) + '\n';
+  const json = JSON.stringify(mergeAgentHooks(
+    settings,
+    {
+      nodeBin, kbJsPath, agent, kbDir,
+    },
+  ), null, 2) + '\n';
   // Write-to-temp-then-rename so a crash can't half-write the config.
   writeFileSync(`${path}.kb-tmp`, json);
   renameSync(`${path}.kb-tmp`, path);

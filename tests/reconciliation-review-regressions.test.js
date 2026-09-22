@@ -11,7 +11,16 @@ import { runReconciliation } from '../src/reconciliation.js';
 const db = getDb();
 let dir;
 beforeEach(() => {
-  db.exec('DELETE FROM facts; DELETE FROM entity_aliases; DELETE FROM entities; DELETE FROM vault_files; DELETE FROM documents; DELETE FROM harvest_log; DELETE FROM meta;');
+  db.exec(`
+    DELETE FROM facts;
+    DELETE FROM entity_aliases;
+    DELETE FROM entities;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+    DELETE FROM harvest_log;
+    DELETE FROM meta WHERE key != 'schema:document-detachment';
+  `);
   dir = mkdtempSync(join(tmpdir(), 'kb-reconcile-review-'));
 });
 function source(name, text) {

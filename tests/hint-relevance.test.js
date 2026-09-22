@@ -147,6 +147,222 @@ describe('the hint count is not a constant', () => {
   });
 });
 
+describe('bounded natural-phrasing expansion', () => {
+  it('generalizes the supported -se/-sal derivation beyond the recall corpus', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags) VALUES (?, ?, ?, ?)',
+    );
+    const cases = [
+      ['Disposal cedar procedure', 'Disposal cedar record', 'dispose of the cedar stock'],
+      ['Appraisal topaz procedure', 'Appraisal topaz record', 'appraise the topaz stock'],
+      ['Arousal sapphire procedure', 'Arousal sapphire record', 'arouse the sapphire response'],
+      ['Recusal juniper procedure', 'Recusal juniper record', 'recuse the juniper reviewer'],
+    ];
+    for (const [title, sibling, prompt] of cases) {
+      insert.run(title, 'bounded morphology fixture', 'note', 'morphology');
+      insert.run(sibling, 'bounded morphology fixture', 'note', 'morphology');
+      assert.ok(
+        relevantNotes(prompt).some(hit => hit.title === title),
+        `${prompt} did not recover ${title}`,
+      );
+    }
+    insert.run('Appraise cobalt procedure', 'reverse derivation fixture', 'note', 'morphology');
+    insert.run('Appraise cobalt record', 'reverse derivation fixture', 'note', 'morphology');
+    assert.ok(
+      relevantNotes('the cobalt appraisal is ready')
+        .some(hit => hit.title === 'Appraise cobalt procedure'),
+      'appraisal did not recover the appraise identity',
+    );
+    assert.ok(
+      relevantNotes('test why we dispose of the cedar stock')
+        .some(hit => hit.title === 'Disposal cedar procedure'),
+      'a legitimate test request disabled all expansion',
+    );
+    for (const prompt of [
+      'Test case: dispose of the cedar stock. Expect the hint to fire.',
+      'Verify disposing of the cedar stock makes the hint return a result.',
+      'Dispose of the cedar stock. The hint should match.',
+    ]) {
+      assert.ok(
+        !relevantNotes(prompt).some(hit => hit.title === 'Disposal cedar procedure'),
+        `meta-test instruction triggered expansion: ${prompt}`,
+      );
+    }
+  });
+
+  it('declines unsupported or sense-mismatched sibling derivations', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags) VALUES (?, ?, ?, ?)',
+    );
+    const cases = [
+      ['Removal marble policy', 'please remove the marble entry'],
+      ['Reversal proxy policy', 'restart the reverse proxy'],
+      ['Refusal varnish policy', 'the varnish will refuse to cure'],
+      ['Reprisal theater policy', 'reprise the theater performance'],
+      ['Callosal tissue policy', 'callose accumulates in plant tissue'],
+    ];
+    const surfaced = [];
+    for (const [title, prompt] of cases) {
+      insert.run(title, 'sense mismatch fixture', 'note', 'morphology');
+      insert.run(`${title} reference`, 'sense mismatch sibling', 'note', 'morphology');
+      if (relevantNotes(prompt).some(hit => hit.title === title)) {
+        surfaced.push(`${prompt} -> ${title}`);
+      }
+    }
+    assert.deepEqual(surfaced, [], `sense-mismatched derivations surfaced: ${surfaced.join(', ')}`);
+  });
+
+  it('folds transitively related spellings into one evidence family', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags) VALUES (?, ?, ?, ?)',
+    );
+    insert.run('Propose proposals proposal', 'morphology chain one', 'note', 'chain');
+    insert.run('Propose proposals proposal revisited', 'morphology chain two', 'note', 'chain');
+
+    assert.deepStrictEqual(
+      relevantNotes('proposal weather').filter(hit => hit.title.startsWith('Propose proposals')),
+      [],
+      'one connected morphology family counted as independent evidence',
+    );
+  });
+
+  it('does not rescore an admitted primary match through derivations', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags) VALUES (?, ?, ?, ?)',
+    );
+    insert.run('Propose proposal amber', 'primary scoring one', 'note', 'primary');
+    insert.run('Propose proposal amber revisited', 'primary scoring two', 'note', 'primary');
+
+    const hit = relevantNotes('propose proposal amber', { explain: true })
+      .find(entry => entry.title === 'Propose proposal amber');
+    assert.equal(
+      hit?.evidence.families.length,
+      3,
+      'the fallback changed family scoring for a note already admitted by exact terms',
+    );
+  });
+
+  it('preserves public/main primary-family behavior for transitive chains', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags) VALUES (?, ?, ?, ?)',
+    );
+    insert.run('Reviewer reviews review', 'primary chain one', 'note', 'primary-parity');
+    insert.run(
+      'Reviewer reviews review revisited',
+      'primary chain two',
+      'note',
+      'primary-parity',
+    );
+
+    const hits = relevantNotes('reviewer reviews review', { explain: true })
+      .filter(entry => entry.title.startsWith('Reviewer reviews review'));
+    assert.equal(hits.length, 2, 'head declined an identical input that public/main admits');
+    assert.deepEqual(
+      hits[0].evidence.families.map(family => family.terms),
+      [['reviewer', 'review'], ['reviews']],
+      'head changed public/main primary-family partitioning',
+    );
+  });
+
+  it('keeps primary candidates and deduplicates supplemental overlap', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags, aliases) VALUES (?, ?, ?, ?, ?)',
+    );
+    for (let index = 0; index < 45; index++) {
+      insert.run(`Lantern reference ${index}`, 'lantern primary candidate', 'note', 'misc', null);
+    }
+    insert.run('Proposal lantern sibling', 'proposal expansion sibling', 'note', 'misc', null);
+    const target = insert.run(
+      'Proposal expansion target',
+      'proposal expansion target',
+      'note',
+      'misc',
+      'lantern',
+    ).lastInsertRowid;
+    assert.ok(
+      relevantNotes('propose lantern', { limit: 50 }).some(hit => hit.id === target),
+      'a full primary window displaced the supplemental target',
+    );
+
+    insert.run('Beacon vocabulary one', 'beacon vocabulary', 'note', 'misc', null);
+    insert.run('Beacon vocabulary two', 'beacon vocabulary', 'note', 'misc', null);
+    const exactBypass = insert.run(
+      'Proposal supplemental exact-evidence bypass',
+      'supplemental exact evidence',
+      'note',
+      'misc',
+      'lantern beacon',
+    ).lastInsertRowid;
+    assert.ok(
+      !relevantNotes('propose lantern beacon', { limit: 50 })
+        .some(hit => hit.id === exactBypass),
+      'a supplemental candidate bypassed the primary cap without needing expansion',
+    );
+
+    const overlaps = [];
+    for (let index = 0; index < 10; index++) {
+      overlaps.push(insert.run(
+        `Proposal overlap ${String(index).padStart(2, '0')}`,
+        'propose overlap',
+        'note',
+        'misc',
+        'beacon',
+      ).lastInsertRowid);
+    }
+    const novel = insert.run(
+      'Proposal expansion target with deliberately longer title',
+      'expansion target',
+      'note',
+      'misc',
+      'beacon',
+    ).lastInsertRowid;
+    const hits = relevantNotes('propose beacon', { limit: 50 });
+
+    assert.ok(
+      hits.some(hit => hit.id === novel),
+      'primary overlaps consumed the supplemental candidate budget',
+    );
+    assert.equal(
+      hits.filter(hit => hit.id === overlaps[0]).length,
+      1,
+      'a candidate returned by both queries was scored twice',
+    );
+  });
+
+  it('caps supplemental candidates at ten', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO documents (title, content, doc_type, tags, aliases) VALUES (?, ?, ?, ?, ?)',
+    );
+    insert.run('Beacon vocabulary one', 'beacon vocabulary', 'note', 'misc', null);
+    insert.run('Beacon vocabulary two', 'beacon vocabulary', 'note', 'misc', null);
+    const supplementalIds = [];
+    for (let index = 0; index < 11; index++) {
+      supplementalIds.push(insert.run(
+        `Arousal arousal candidate ${String(index).padStart(2, '0')}`,
+        'bounded supplemental candidate',
+        'note',
+        'misc',
+        'beacon',
+      ).lastInsertRowid);
+    }
+    const supplementalIdSet = new Set(supplementalIds);
+    const hits = relevantNotes('arouse beacon', { limit: 50 });
+
+    assert.equal(
+      hits.filter(hit => supplementalIdSet.has(hit.id)).length,
+      10,
+      'the supplemental result count did not match the configured cap',
+    );
+  });
+});
+
 function ensureOutcomeSchema(db) {
   const columns = db.prepare('PRAGMA table_info(retrievals)').all().map(c => c.name);
   if (!columns.includes('doc_version')) db.exec('ALTER TABLE retrievals ADD COLUMN doc_version TEXT');

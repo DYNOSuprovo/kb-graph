@@ -75,9 +75,9 @@ export function insertDocLinks(fromId, related, kind = 'related') {
 export function relatedForDoc(docId, { limit = 5 } = {}) {
   const db = getDb();
   return db.prepare(`
-    SELECT l.to_id as id, l.score, d.title FROM doc_links l JOIN documents d ON d.id = l.to_id WHERE l.from_id = ?
+    SELECT l.to_id as id, l.score, d.title FROM doc_links l JOIN documents d ON d.id = l.to_id WHERE l.from_id = ? AND d.detached_at IS NULL
     UNION
-    SELECT l.from_id as id, l.score, d.title FROM doc_links l JOIN documents d ON d.id = l.from_id WHERE l.to_id = ?
+    SELECT l.from_id as id, l.score, d.title FROM doc_links l JOIN documents d ON d.id = l.from_id WHERE l.to_id = ? AND d.detached_at IS NULL
     ORDER BY score DESC LIMIT ?
   `).all(docId, docId, limit);
 }
@@ -104,7 +104,8 @@ function hasUnembeddedLiveDocuments() {
   return Boolean(getDb().prepare(`
     SELECT 1
     FROM documents d
-    WHERE d.superseded_at IS NULL
+    WHERE d.detached_at IS NULL
+      AND d.superseded_at IS NULL
       AND TRIM(COALESCE(d.content, '')) <> ''
       AND NOT EXISTS (
         SELECT 1 FROM embeddings e WHERE e.document_id = d.id

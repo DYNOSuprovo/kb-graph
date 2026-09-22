@@ -30,7 +30,12 @@ describe('hybrid result merging', () => {
 });
 
 describe('hybrid filters during semantic failure', () => {
-  beforeEach(() => getDb().exec('DELETE FROM embeddings; DELETE FROM vault_files; DELETE FROM documents'));
+  beforeEach(() => getDb().exec(`
+    DELETE FROM embeddings;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `));
 
   for (const filters of [{ project: 'wanted' }, { type: 'lesson' }, { project: 'wanted', type: 'lesson' }]) {
     it(`filters before candidate limits: ${JSON.stringify(filters)}`, async () => {

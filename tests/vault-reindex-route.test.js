@@ -38,8 +38,12 @@ function postReindex(socketPath) {
       path: '/api/vault/reindex',
       headers: { Cookie: `kb_session=${createSession()}` },
     }, res => {
-      res.resume();
-      res.once('end', () => resolve(res.statusCode));
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.once('end', () => resolve({
+        status: res.statusCode,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
     });
     req.once('error', reject);
     req.end();
@@ -57,7 +61,7 @@ describe('post-sync vault reindex', () => {
 
     writeFileSync(path, '---\ntitle: Post-sync edit\n---\n\nReplacement semantic body.');
     await withServer(async socketPath => {
-      assert.equal(await postReindex(socketPath), 200);
+      assert.equal((await postReindex(socketPath)).status, 200);
     });
 
     const doc = getDb().prepare("SELECT id, content FROM documents WHERE title = 'Post-sync edit'").get();
@@ -67,5 +71,45 @@ describe('post-sync vault reindex', () => {
     assert.equal(doc.content, 'Replacement semantic body.');
     assert.match(embedding.chunk_text, /Replacement semantic body/);
     assert.doesNotMatch(embedding.chunk_text, /Original semantic body/);
+  });
+
+  it('returns a privacy-safe conflict when the prune guard refuses', async () => {
+    const database = getDb();
+    const insertDocument = database.prepare(
+      'INSERT INTO documents (title, content, source, doc_type) VALUES (?, ?, ?, ?)'
+    );
+    const insertVaultFile = database.prepare(
+      'INSERT INTO vault_files (vault_path, content_hash, document_id, title, note_type) VALUES (?, ?, ?, ?, ?)'
+    );
+    database.transaction(() => {
+      for (let index = 0; index < 6; index += 1) {
+        const vaultPath = `missing-route/${index}.md`;
+        const document = insertDocument.run(
+          `Route secret ${index}`, `private route body ${index}`, `vault:${vaultPath}`, 'note'
+        );
+        insertVaultFile.run(vaultPath, `missing-${index}`, document.lastInsertRowid, `Route secret ${index}`, 'note');
+      }
+    })();
+
+    try {
+      await withServer(async socketPath => {
+        const response = await postReindex(socketPath);
+        assert.equal(response.status, 409);
+        assert.equal(response.body.code, 'KB_VAULT_PRUNE_REFUSED');
+        assert.equal(response.body.missing_count, 6);
+        assert.equal(response.body.limit, 5);
+        assert.doesNotMatch(JSON.stringify(response.body), /missing-route|Route secret|private route body/);
+      });
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS count FROM documents WHERE source LIKE 'vault:missing-route/%'").get().count,
+        6,
+      );
+    } finally {
+      database.prepare(
+        "UPDATE documents SET source = replace(source, 'vault:', 'test-cleanup:') WHERE source LIKE 'vault:missing-route/%'"
+      ).run();
+      database.prepare("DELETE FROM vault_files WHERE vault_path LIKE 'missing-route/%'").run();
+      database.prepare("DELETE FROM documents WHERE source LIKE 'test-cleanup:missing-route/%'").run();
+    }
   });
 });

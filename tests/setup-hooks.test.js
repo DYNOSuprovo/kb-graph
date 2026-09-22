@@ -41,6 +41,27 @@ test('mergeAgentHooks adds retrieval, continuity, and asynchronous capture hooks
   assert.equal(merged.hooks.SessionEnd[0].hooks[0].command, 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=session_end');
 });
 
+test('generated hooks preserve a custom KB_DIR', () => {
+  const merged = mergeAgentHooks({}, { ...OPTS, kbDir: "/home/user/KB's state" });
+  assert.equal(
+    merged.hooks.SessionStart[0].hooks[0].command,
+    'env NODE_OPTIONS= KB_DIR=\'/home/user/KB\'"\'"\'s state\' /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook',
+  );
+});
+
+test('generated hooks quote global install paths with spaces', () => {
+  const options = {
+    nodeBin: '/opt/Node Runtime/bin/node',
+    kbJsPath: '/opt/KB Package/bin/kb.js',
+  };
+  const merged = mergeAgentHooks({}, options);
+  assert.equal(
+    merged.hooks.SessionStart[0].hooks[0].command,
+    "env NODE_OPTIONS= '/opt/Node Runtime/bin/node' '/opt/KB Package/bin/kb.js' wakeup-hook",
+  );
+  assert.deepEqual(mergeAgentHooks(merged, options), merged);
+});
+
 test('mergeAgentHooks replaces the legacy inline preservation command instead of leaving an invalid second hook', () => {
   const legacy = "printf '%s\\n' 'CRITICAL PRESERVATION INSTRUCTIONS FOR THIS SUMMARY:'; echo 'Git state at compaction:'";
   const existing = { hooks: { PreCompact: [{ hooks: [{ type: 'command', command: legacy }] }] } };
@@ -586,18 +607,24 @@ test('staleHookWarnings says nothing when there are no hook files at all', () =>
 // --- Cursor --------------------------------------------------------------
 
 // Cursor's hooks.json: camelCase events, flat `{command}` entries (no
-// `hooks` array), a top-level `version`. Only sessionStart is installed:
-// beforeSubmitPrompt has no context field, so hints cannot be pushed, and
-// preToolUse only relays agent_message on deny.
+// `hooks` array), a top-level `version`. Native Desktop stop and preCompact
+// capture are installed default-off; sessionEnd is intentionally absent.
 const CURSOR_OPTS = { ...OPTS, agent: AGENT.CURSOR };
 
-test('mergeAgentHooks installs only a flat sessionStart entry for cursor', () => {
+test('mergeAgentHooks installs flat Cursor briefing and supported lifecycle entries', () => {
   const merged = mergeAgentHooks({}, CURSOR_OPTS);
   assert.equal(merged.version, 1);
-  assert.deepEqual(Object.keys(merged.hooks), ['sessionStart']);
+  assert.deepEqual(Object.keys(merged.hooks), ['preCompact', 'stop', 'sessionStart']);
+  assert.deepEqual(merged.hooks.preCompact, [
+    { command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=precompact --agent cursor' },
+  ]);
+  assert.deepEqual(merged.hooks.stop, [
+    { command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=activity --agent cursor' },
+  ]);
   assert.deepEqual(merged.hooks.sessionStart, [
     { command: 'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent cursor' },
   ]);
+  assert.equal(merged.hooks.sessionEnd, undefined);
 });
 
 test('mergeAgentHooks is idempotent for cursor and keeps foreign entries', () => {
@@ -605,7 +632,12 @@ test('mergeAgentHooks is idempotent for cursor and keeps foreign entries', () =>
   const once = mergeAgentHooks(existing, CURSOR_OPTS);
   assert.equal(once.hooks.sessionStart.length, 2);
   assert.equal(once.hooks.sessionStart[0].command, '/x/other.sh SessionStart');
-  assert.deepEqual(once.hooks.stop, existing.hooks.stop);
+  assert.equal(once.hooks.stop.length, 2);
+  assert.deepEqual(once.hooks.stop[0], existing.hooks.stop[0]);
+  assert.equal(
+    once.hooks.stop[1].command,
+    'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=activity --agent cursor',
+  );
   assert.deepEqual(mergeAgentHooks(once, CURSOR_OPTS), once);
 });
 
@@ -645,6 +677,15 @@ test('installAgentHooks writes cursor hooks to ~/.cursor/hooks.json', () => {
     written.hooks.sessionStart[0].command,
     'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js wakeup-hook --agent cursor',
   );
+  assert.equal(
+    written.hooks.stop[0].command,
+    'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=activity --agent cursor',
+  );
+  assert.equal(
+    written.hooks.preCompact[0].command,
+    'env NODE_OPTIONS= /usr/local/bin/node /opt/kb/bin/kb.js session-capture-hook --reason=precompact --agent cursor',
+  );
+  assert.equal(written.hooks.sessionEnd, undefined);
 });
 
 test('mergeAgentHooks legacy cleanup leaves a flat hand-written entry alone', () => {

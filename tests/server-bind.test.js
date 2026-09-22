@@ -17,13 +17,16 @@ import {
   listenHttpServer,
   resolveHttpBind,
   resolveHttpOrigin,
+  resolveHttpTrustedOrigins,
 } from '../src/http-bind.js';
 import {
   buildEnvContent,
   dockerComposeContent,
+  launchdServiceContent,
   parseAutoArgs,
   resolvePersistedHttpHost,
   resolvePersistedHttpPort,
+  systemdServiceContent,
 } from '../src/cli/setup.js';
 
 const LIVE_PROJECT_ENV = fileURLToPath(new URL('../.env', import.meta.url));
@@ -50,7 +53,7 @@ function createSetupCliSandbox(prefix) {
     : null;
 
   return {
-    projectEnv: join(project, '.env'),
+    projectEnv: join(home, 'kb-data', '.env'),
     run(args) {
       return spawnSync(
         process.execPath,
@@ -145,13 +148,17 @@ test('invalid bind hosts fail closed before server startup', () => {
 });
 
 test('invalid ports fail closed before server startup', () => {
-  for (const KB_PORT of ['0', '-1', '65536', 'abc', '3838oops', '3.5']) {
+  for (const KB_PORT of [
+    '0', '-1', '65536', 'abc', '3838oops', '3.5',
+    '0x10', '1e3', '+80', '01',
+  ]) {
     assert.throws(
       () => resolveHttpBind({ KB_PORT }),
       /KB_PORT/,
       KB_PORT,
     );
   }
+  assert.equal(resolveHttpBind({ KB_PORT: ' 4848 ' }).port, 4848);
 });
 
 test('the listener binds the resolved host, not the platform wildcard default', async () => {
@@ -184,7 +191,9 @@ test('startup URLs name the actual bind host and format IPv6 safely', () => {
     resolveHttpOrigin({ host: '0.0.0.0', port: 3838 }, {}),
     'http://localhost:3838',
   );
-  for (const host of ['::', '::0', '0:0:0:0:0:0:0:0', '::ffff:0.0.0.0']) {
+  for (const host of [
+    '::', '::0', '0:0:0:0:0:0:0:0', '::ffff:0.0.0.0', '::ffff:0:0',
+  ]) {
     assert.equal(resolveHttpOrigin({ host, port: 3838 }, {}), 'http://localhost:3838');
   }
   assert.equal(
@@ -193,6 +202,38 @@ test('startup URLs name the actual bind host and format IPv6 safely', () => {
       { BETTER_AUTH_URL: 'https://kb.example.com/' },
     ),
     'https://kb.example.com',
+  );
+});
+
+test('OAuth trusted origins include only equivalent loopback aliases', () => {
+  assert.deepEqual(
+    resolveHttpTrustedOrigins({ host: '127.0.0.1', port: 3838 }, {}),
+    ['http://127.0.0.1:3838', 'http://localhost:3838'],
+  );
+  assert.deepEqual(
+    resolveHttpTrustedOrigins({ host: 'localhost', port: 3838 }, {}),
+    ['http://localhost:3838', 'http://127.0.0.1:3838'],
+  );
+  assert.deepEqual(
+    resolveHttpTrustedOrigins({ host: '192.168.1.10', port: 3838 }, {}),
+    ['http://192.168.1.10:3838'],
+  );
+  assert.deepEqual(
+    resolveHttpTrustedOrigins({ host: '::1', port: 3838 }, {}),
+    ['http://[::1]:3838', 'http://localhost:3838', 'http://127.0.0.1:3838'],
+  );
+  for (const host of ['0.0.0.0', '::', '::ffff:0:0']) {
+    assert.deepEqual(
+      resolveHttpTrustedOrigins({ host, port: 3838 }, {}),
+      ['http://localhost:3838'],
+    );
+  }
+  assert.deepEqual(
+    resolveHttpTrustedOrigins(
+      { host: '127.0.0.1', port: 3838 },
+      { BETTER_AUTH_URL: 'https://kb.example.com/' },
+    ),
+    ['https://kb.example.com'],
   );
 });
 
@@ -244,6 +285,27 @@ test('generated containers expose HTTP only on host loopback', () => {
   });
   assert.match(compose, /"127\.0\.0\.1:3838:3838"/);
   assert.match(compose, /KB_HOST: 0\.0\.0\.0/);
+  assert.ok(compose.includes(`env_file:\n      - ${JSON.stringify(join(process.env.KB_DIR, '.env'))}`));
+});
+
+test('generated services preserve custom KB_DIR paths', () => {
+  const systemd = systemdServiceContent({
+    kbDir: '/home/u/100% "kb"',
+    nodeBin: '/opt/Node 100%/bin/node',
+    projectRoot: '/opt/KB Package',
+  });
+  assert.match(systemd, /Environment="KB_DIR=\/home\/u\/100%% \\"kb\\""/);
+  assert.match(systemd, /WorkingDirectory="\/opt\/KB Package"/);
+  assert.match(systemd, /ExecStart="\/opt\/Node 100%%\/bin\/node" "\/opt\/KB Package\/bin\/kb\.js" start/);
+
+  const launchd = launchdServiceContent({
+    kbDir: '/home/u/KB & notes',
+    nodeBin: '/opt/Node & Runtime/bin/node',
+    projectRoot: '/opt/KB & Package',
+  });
+  assert.match(launchd, /<key>KB_DIR<\/key>\s*<string>\/home\/u\/KB &amp; notes<\/string>/);
+  assert.match(launchd, /<string>\/opt\/Node &amp; Runtime\/bin\/node<\/string>/);
+  assert.match(launchd, /<key>WorkingDirectory<\/key>\s*<string>\/opt\/KB &amp; Package<\/string>/);
 });
 
 test('the setup CLI rejects unsafe hosts without touching live configuration', () => {
@@ -322,6 +384,34 @@ test('the production server binds to loopback by default', async () => {
     const metadata = await discovery.text();
     assert.match(metadata, new RegExp(`http://${DEFAULT_HTTP_HOST}:`));
     assert.doesNotMatch(metadata, /http:\/\/localhost:/);
+
+    const signInUrl = `http://${DEFAULT_HTTP_HOST}:${address.port}/api/auth/sign-in/email`;
+    const probeOrigin = async origin => {
+      const response = await fetch(signInUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin,
+        },
+        body: JSON.stringify({
+          email: 'not-an-email',
+          password: 'not-a-real-password',
+        }),
+      });
+      return {
+        status: response.status,
+        code: (await response.json()).code,
+      };
+    };
+    assert.deepEqual(
+      await probeOrigin(`http://localhost:${address.port}`),
+      { status: 400, code: 'INVALID_EMAIL' },
+    );
+    assert.deepEqual(
+      await probeOrigin('https://evil.example'),
+      { status: 403, code: 'INVALID_ORIGIN' },
+    );
+
     child.send('close');
     const [code] = await once(child, 'exit');
     assert.equal(code, 0);

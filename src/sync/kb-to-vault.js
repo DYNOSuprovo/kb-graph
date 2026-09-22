@@ -164,7 +164,8 @@ function getOrphanedDocs() {
   return db.prepare(`
     SELECT d.*
     FROM documents d
-    WHERE d.id NOT IN (
+    WHERE d.detached_at IS NULL
+      AND d.id NOT IN (
       SELECT document_id FROM vault_files WHERE document_id IS NOT NULL
     )
     ORDER BY d.created_at

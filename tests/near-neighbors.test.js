@@ -61,7 +61,12 @@ const wrote = (title) => getDb().prepare('SELECT COUNT(*) c FROM documents WHERE
 describe('an accepted note is told what it landed beside', () => {
   // Each test owns a complete semantic corpus. Leaving documents behind while
   // deleting their embeddings correctly makes authored writes fail closed.
-  beforeEach(() => getDb().exec('DELETE FROM embeddings; DELETE FROM documents'));
+  beforeEach(() => getDb().exec(`
+    DELETE FROM embeddings;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `));
 
   it('names related live notes as context after the write', async () => {
     const content = 'The relay clears its lease table on every restart, so leases never outlive a deploy.';
@@ -149,7 +154,12 @@ describe('an accepted note is told what it landed beside', () => {
 });
 
 describe('the pre-check and the write describe the same neighbourhood', () => {
-  beforeEach(() => getDb().exec('DELETE FROM embeddings; DELETE FROM documents'));
+  beforeEach(() => getDb().exec(`
+    DELETE FROM embeddings;
+    UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+    DELETE FROM vault_files;
+    DELETE FROM documents;
+  `));
 
   // The drift this guards shipped once in the other direction: kb_check_duplicate
   // green-lit content the write then refused. A pre-check that omits what the

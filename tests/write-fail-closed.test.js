@@ -180,7 +180,12 @@ describe('fail-closed authored note writes', () => {
   });
 
   it('serializes the duplicate verdict with the authored write', async () => {
-    getDb().exec('DELETE FROM embeddings; DELETE FROM documents;');
+    getDb().exec(`
+      DELETE FROM embeddings;
+      UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+      DELETE FROM vault_files;
+      DELETE FROM documents;
+    `);
     let arrivals = 0;
     let releaseBarrier;
     const barrier = new Promise(resolve => { releaseBarrier = resolve; });
@@ -218,7 +223,12 @@ describe('fail-closed authored note writes', () => {
   });
 
   it('atomically reclaims a write lock whose owner has exited', async () => {
-    getDb().exec('DELETE FROM embeddings; DELETE FROM documents;');
+    getDb().exec(`
+      DELETE FROM embeddings;
+      UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+      DELETE FROM vault_files;
+      DELETE FROM documents;
+    `);
     getDb().prepare(`
       INSERT OR REPLACE INTO meta (key, value)
       VALUES ('runtime:authored-write-lock', ?)
@@ -238,7 +248,12 @@ describe('fail-closed authored note writes', () => {
   });
 
   it('reclaims a stale lock after its pid has been reused', async () => {
-    getDb().exec('DELETE FROM embeddings; DELETE FROM documents;');
+    getDb().exec(`
+      DELETE FROM embeddings;
+      UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+      DELETE FROM vault_files;
+      DELETE FROM documents;
+    `);
     assert.ok(resolveProcessStart(), 'current process start identity is unavailable');
     getDb().prepare(`
       INSERT OR REPLACE INTO meta (key, value)
@@ -261,6 +276,8 @@ describe('fail-closed authored note writes', () => {
   it('does not report a durable write as failed when lock release is transiently unavailable', async () => {
     getDb().exec(`
       DELETE FROM embeddings;
+      UPDATE documents SET source = NULL WHERE source LIKE 'vault:%';
+      DELETE FROM vault_files;
       DELETE FROM documents;
       CREATE TEMP TRIGGER fail_authored_lock_release
       BEFORE DELETE ON meta
