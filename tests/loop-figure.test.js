@@ -7,6 +7,7 @@ import {
   hasRenderDrift,
   renderLoopFigure,
 } from '../scripts/render-loop-figure.mjs';
+import { assertPublicArtifactSafe } from './helpers/public-artifact-policy.js';
 
 function readText(path) {
   return readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -44,16 +45,7 @@ describe('README knowledge-loop figure', () => {
   });
 
   it('excludes known private-data patterns from the fixture and SVG', () => {
-    const publicBytes = `${fixtureText}\n${committedSvg}`;
-    const forbidden = [
-      /\/(?:Users|home)\//i,
-      /\b(?:tinyfish|mino)\b/i,
-      /\bPF-\d+\b/i,
-      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
-      /\b(?:Bearer\s+|sk-|ghp_|phc_|xox[baprs]-)[A-Za-z0-9._-]{8,}/i,
-    ];
-
-    for (const pattern of forbidden) assert.doesNotMatch(publicBytes, pattern);
+    assertPublicArtifactSafe(`${fixtureText}\n${committedSvg}`);
   });
 
   it('uses current runtime prefixes and handler response shape', () => {
@@ -98,19 +90,19 @@ describe('README knowledge-loop figure', () => {
     assert.match(toolsSource, /`Note\$\{idNote\} saved to \$\{result\.path\} as \$\{result\.tier\}/);
   });
 
-  it('places the asset after badges and before the concise introduction', () => {
-    const badgeEnd = readme.indexOf('](LICENSE)');
+  it('keeps the synthetic asset with the loop documentation', () => {
+    const loopHeading = readme.indexOf('## The loop');
     const image = readme.indexOf(
       '[![Three-step kb-graph loop: session briefing, targeted prompt hint, and durable capture](docs/assets/loop-demo.svg)](docs/assets/loop-demo.svg)',
     );
     const caption = readme.indexOf(
-      '*Static demonstration with synthetic data; open it for the full-size view. Claude Code is shown; Codex receives equivalent hook context; Cursor receives the session briefing and can call `kb_write` through MCP, but receives no pushed hints.*',
+      '*Deterministic documentation illustration with synthetic data.',
     );
-    const intro = readme.indexOf('kb-graph gives Claude Code');
+    const retrieve = readme.indexOf('### Retrieve');
 
-    assert.ok(badgeEnd < image);
+    assert.ok(loopHeading < image);
     assert.ok(image < caption);
-    assert.ok(caption < intro);
+    assert.ok(caption < retrieve);
   });
 
   it('stays compact, accessible, and within the supported SVG subset', () => {
